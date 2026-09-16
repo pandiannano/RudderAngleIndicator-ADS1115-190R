@@ -19,6 +19,13 @@
 // Calibration (3-point: full-port / midships / full-starboard) is stored in
 // NVS flash and can be set either from on-screen HMI buttons or the USB
 // serial console - see README.md.
+//
+// AIN1 addition: a second sender, a floating (float-arm) level sender that
+// only ever rests at 10 discrete resistance steps, is now also read on
+// AIN1 and decoded/filtered independently (see FloatLevel.h). This did not
+// require changing the AIN0 angle pipeline above, other than re-asserting
+// the ADS1115's PGA gain before each AIN0 batch, since the gain register is
+// shared by all four ADS1115 inputs and the AIN1 code now also changes it.
 
 #include <math.h>
 #include <Wire.h>
@@ -27,6 +34,7 @@
 #include "Config.h"
 #include "Filtering.h"
 #include "Calibration.h"
+#include "FloatLevel.h"
 #include "HmiLink.h"
 
 static Adafruit_ADS1115 ads;
@@ -37,6 +45,12 @@ static SlewLimiter slewLimiter(SLEW_MAX_DEG_PER_SEC);
 static float g_lastFilteredSenderVolts = 0.0f;
 static float g_lastDisplayedAngle = NAN;
 static bool  g_lastFaultState = false;
+
+static FloatLevelSensor floatLevel;
+static float g_lastFloatSenderVolts = 0.0f;
+static int   g_lastDisplayedLevel = -1;
+static bool  g_lastLevelFaultState = false;
+static int   g_levelCalSlot = 0; // slot selected for HMI NEXT/CAPTURE buttons
 
 // ---------------------------------------------------------------------------
 // Debug helper
@@ -80,6 +94,37 @@ static void doCalReset() {
   DBG("[CAL] reset %s\n", ok ? "OK" : "FAILED");
 }
 
+// ---------------------------------------------------------------------------
+// AIN1 float-level calibration actions (new; mirrors the pattern above)
+// ---------------------------------------------------------------------------
+static void doLvlNext() {
+  g_levelCalSlot = (g_levelCalSlot + 1) % FLOAT_LEVEL_COUNT;
+  char msg[16];
+  snprintf(msg, sizeof(msg), "SLOT %d", g_levelCalSlot);
+  hmiSendText(HMI_COMP_LEVEL_FAULT_TXT, msg);
+  DBG("[LVL] slot selected: %d\n", g_levelCalSlot);
+}
+
+static void doLvlCapture() {
+  floatLevel.captureLevel(g_levelCalSlot, g_lastFloatSenderVolts);
+  char msg[24];
+  snprintf(msg, sizeof(msg), "SLOT %d SET", g_levelCalSlot);
+  hmiSendText(HMI_COMP_LEVEL_FAULT_TXT, msg);
+  DBG("[LVL] slot %d set to %.3f V\n", g_levelCalSlot, g_lastFloatSenderVolts);
+}
+
+static void doLvlSave() {
+  bool ok = floatLevel.save();
+  hmiSendText(HMI_COMP_LEVEL_FAULT_TXT, ok ? "LVL SAVED" : "SAVE FAILED");
+  DBG("[LVL] save %s\n", ok ? "OK" : "FAILED");
+}
+
+static void doLvlReset() {
+  bool ok = floatLevel.resetToDefaults();
+  hmiSendText(HMI_COMP_LEVEL_FAULT_TXT, ok ? "LVL RESET" : "RESET FAILED");
+  DBG("[LVL] reset %s\n", ok ? "OK" : "FAILED");
+}
+
 // Called by HmiLink.cpp whenever a complete touch-event frame is received.
 void onHmiTouchEvent(uint8_t pageId, uint8_t componentId, uint8_t eventType) {
   const uint8_t RELEASE = 0x00; // act on release, like a normal button click
@@ -91,6 +136,10 @@ void onHmiTouchEvent(uint8_t pageId, uint8_t componentId, uint8_t eventType) {
     case HMI_BTN_CAL_MAX_ID:    doCalSetMax();    break;
     case HMI_BTN_CAL_SAVE_ID:   doCalSave();      break;
     case HMI_BTN_CAL_RESET_ID:  doCalReset();     break;
+    case HMI_BTN_LVL_NEXT_ID:    doLvlNext();    break;
+    case HMI_BTN_LVL_CAPTURE_ID: doLvlCapture(); break;
+    case HMI_BTN_LVL_SAVE_ID:    doLvlSave();    break;
+    case HMI_BTN_LVL_RESET_ID:   doLvlReset();   break;
     default: break;
   }
 }
@@ -109,12 +158,24 @@ static void pollDebugSerial() {
       else if (line == "MAX") doCalSetMax();
       else if (line == "SAVE") doCalSave();
       else if (line == "RESET") doCalReset();
+      else if (line == "LVLSAVE") doLvlSave();
+      else if (line == "LVLRESET") doLvlReset();
+      else if (line.startsWith("LVL") && line.length() == 4 && line[3] >= '0' && line[3] <= '9') {
+        int idx = line[3] - '0';
+        floatLevel.captureLevel(idx, g_lastFloatSenderVolts);
+        DBG("[LVL] slot %d set to %.3f V (LVLSAVE to persist)\n", idx, g_lastFloatSenderVolts);
+      }
       else if (line == "STATUS") {
         const CalPoints &p = calibration.points();
         DBG("[STATUS] senderV=%.3f angle=%.2f cal(min=%.3f,center=%.3f,max=%.3f)\n",
             g_lastFilteredSenderVolts, g_lastDisplayedAngle, p.vAtMin, p.vAtCenter, p.vAtMax);
+        DBG("[STATUS] levelSenderV=%.3f level=%d/%d table=[",
+            g_lastFloatSenderVolts, g_lastDisplayedLevel, FLOAT_LEVEL_COUNT - 1);
+        for (int i = 0; i < FLOAT_LEVEL_COUNT; i++) {
+          DBG("%.2f%s", floatLevel.levelVoltage(i), (i < FLOAT_LEVEL_COUNT - 1) ? "," : "]\n");
+        }
       } else if (line.length() > 0) {
-        DBG("[CMD] unknown: %s (try MIN/CENTER/MAX/SAVE/RESET/STATUS)\n", line.c_str());
+        DBG("[CMD] unknown: %s (try MIN/CENTER/MAX/SAVE/RESET/LVL0../LVL9/LVLSAVE/LVLRESET/STATUS)\n", line.c_str());
       }
       line = "";
     } else {
@@ -128,6 +189,12 @@ static void pollDebugSerial() {
 // Sensor sampling + filtering + HMI update, one full cycle
 // ---------------------------------------------------------------------------
 static void sampleFilterAndUpdate() {
+  // The ADS1115's PGA gain is a single register shared by all 4 inputs.
+  // The AIN1 float-level read (below) may have changed it, so it must be
+  // re-asserted here before every AIN0 batch. This is the only change made
+  // to the previously-working angle pipeline.
+  ads.setGain(ADS1115_GAIN);
+
   float samples[RAW_SAMPLES_PER_BATCH];
 
   for (int i = 0; i < RAW_SAMPLES_PER_BATCH; i++) {
@@ -180,6 +247,61 @@ static void sampleFilterAndUpdate() {
 }
 
 // ---------------------------------------------------------------------------
+// AIN1 float-level sampling + filtering + HMI update, one full cycle (new)
+// ---------------------------------------------------------------------------
+static void sampleFloatLevelAndUpdate() {
+  // Re-select the gain for this channel's divider swing; see the comment in
+  // sampleFilterAndUpdate() above about the shared PGA gain register.
+  ads.setGain(ADS1115_GAIN_AIN1);
+
+  float samples[LEVEL_RAW_SAMPLES_PER_BATCH];
+
+  for (int i = 0; i < LEVEL_RAW_SAMPLES_PER_BATCH; i++) {
+    int16_t raw = ads.readADC_SingleEnded(AIN1_CHANNEL);
+    samples[i] = ads.computeVolts(raw);
+
+    hmiPoll();
+    pollDebugSerial();
+  }
+
+  float adcVolts = trimmedMean(samples, LEVEL_RAW_SAMPLES_PER_BATCH, LEVEL_TRIM_COUNT);
+  float senderVolts = adcVolts * DIVIDER_RATIO_AIN1;
+  g_lastFloatSenderVolts = senderVolts;
+
+  bool fault = (senderVolts < LEVEL_V_FAULT_LOW) || (senderVolts > LEVEL_V_FAULT_HIGH);
+
+  if (fault != g_lastLevelFaultState) {
+    hmiSendText(HMI_COMP_LEVEL_FAULT_TXT, fault ? "LEVEL FAULT" : "");
+    g_lastLevelFaultState = fault;
+  }
+
+  if (fault) {
+    DBG("[LEVEL FAULT] senderV=%.3f out of plausible range\n", senderVolts);
+    return;
+  }
+
+  // No EMA here on purpose: the sensor only ever sits at one of
+  // FLOAT_LEVEL_COUNT discrete voltages, so nearest-match + a debounce
+  // count (inside floatLevel.update) rejects noise without blurring
+  // between two adjacent, legitimately different levels.
+  int level = floatLevel.update(senderVolts);
+
+  if (level != g_lastDisplayedLevel) {
+    g_lastDisplayedLevel = level;
+    int percent = lround(level * 100.0f / (FLOAT_LEVEL_COUNT - 1));
+
+    hmiSendNumber(HMI_COMP_LEVEL_NUM, percent);
+
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d%%", percent);
+    hmiSendText(HMI_COMP_LEVEL_TXT, String(buf));
+
+    DBG("[LEVEL] senderV=%.3f level=%d/%d (%d%%)\n",
+        senderVolts, level, FLOAT_LEVEL_COUNT - 1, percent);
+  }
+}
+
+// ---------------------------------------------------------------------------
 void setup() {
 #if ENABLE_SERIAL_DEBUG
   Serial.begin(SERIAL_DEBUG_BAUD);
@@ -197,13 +319,16 @@ void setup() {
   ads.setDataRate(ADS1115_DATA_RATE);
 
   calibration.begin();
+  floatLevel.begin();
   hmiBegin();
 
-  DBG("[INIT] ready. Serial console: MIN / CENTER / MAX / SAVE / RESET / STATUS\n");
+  DBG("[INIT] ready. Serial console: MIN / CENTER / MAX / SAVE / RESET / "
+      "LVL0../LVL9 / LVLSAVE / LVLRESET / STATUS\n");
 }
 
 void loop() {
   hmiPoll();
   pollDebugSerial();
   sampleFilterAndUpdate();
+  sampleFloatLevelAndUpdate();
 }

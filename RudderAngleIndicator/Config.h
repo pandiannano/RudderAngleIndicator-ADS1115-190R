@@ -88,6 +88,50 @@
 #define SENDER_V_FAULT_HIGH    12.3f
 
 // ---------------------------------------------------------------------------
+// Floating (float-type) level sender on AIN1 — added alongside the existing
+// AIN0 angle channel. Unlike the AIN0 sender, this one does not move
+// continuously: it is a 0-190 ohm sender operated by a float arm that only
+// ever rests at 10 discrete resistance steps, so it is decoded as a
+// nearest-match against a calibrated table of 10 voltages rather than an
+// interpolated curve. Everything in this section is new; nothing above it
+// (the AIN0 angle pipeline) was changed to add this.
+// ---------------------------------------------------------------------------
+#define AIN1_CHANNEL            1      // AIN1 = floating level sender
+
+// The ADS1115 has a single PGA gain register shared by ALL FOUR inputs, so
+// the firmware must (re)select the gain appropriate to each channel right
+// before sampling it. Default assumes the same style of external divider
+// (see DIVIDER_RATIO above) is used for this sender too; change if the
+// float sender's divider/supply produces a different voltage swing.
+#define ADS1115_GAIN_AIN1       GAIN_ONE
+#define DIVIDER_RATIO_AIN1      3.0f   // (R_TOP + R_BOTTOM) / R_BOTTOM, AIN1 divider
+
+#define FLOAT_LEVEL_COUNT       10     // number of discrete float positions
+
+// Fewer samples than the angle channel's batch: a discrete sensor does not
+// need heavy averaging to resolve fine steps, only enough to reject noise
+// glitches before the nearest-level decision.
+#define LEVEL_RAW_SAMPLES_PER_BATCH  10
+#define LEVEL_TRIM_COUNT             1
+
+// A level is only reported as changed once this many consecutive sample
+// batches agree on the new nearest level — rejects transient chatter while
+// the float arm/wiper is physically moving between two resistor steps.
+#define LEVEL_DEBOUNCE_BATCHES       3
+
+// Plausible real (post divider-correction) sender-voltage range; outside
+// this means an open/shorted float sender or wiring fault.
+#define LEVEL_V_FAULT_LOW      -0.3f
+#define LEVEL_V_FAULT_HIGH     12.3f
+
+// Factory-default voltage for each of the 10 levels (evenly spaced
+// placeholders — the exact values depend on your float sender's fixed
+// series resistor and supply voltage, which are not specified here). Use
+// the LVL0..LVL9 serial commands, or the HMI capture button, to replace
+// these with real measured values and save to flash; see README.md.
+#define DEFAULT_LEVEL_V_STEP    (11.5f / (FLOAT_LEVEL_COUNT - 1))
+
+// ---------------------------------------------------------------------------
 // HMI (TJC / Nextion-protocol) UART link
 // ---------------------------------------------------------------------------
 #define HMI_UART_NUM          1       // use HardwareSerial(1)
@@ -105,6 +149,12 @@
 #define HMI_COMP_FAULT_TXT    "t1"    // Text component used for fault text
 #define HMI_COMP_FAULT_VIS    "vis0"  // (unused placeholder, see HmiLink.cpp)
 
+// New components for the AIN1 float-level sender (does not touch any of
+// the angle components above).
+#define HMI_COMP_LEVEL_NUM     "n1"   // Number/Gauge component: n1.val (0-100%)
+#define HMI_COMP_LEVEL_TXT     "t2"   // Text component, e.g. "70%"
+#define HMI_COMP_LEVEL_FAULT_TXT "t3" // Fault text + calibration status messages
+
 // Touch-event component IDs used for on-screen calibration buttons. These
 // are the numeric Component ID assigned in the TJC Editor's widget
 // properties (NOT the widget name), on page 0. Enable "Send Component ID"
@@ -115,6 +165,13 @@
 #define HMI_BTN_CAL_MAX_ID     12
 #define HMI_BTN_CAL_SAVE_ID    13
 #define HMI_BTN_CAL_RESET_ID   14
+
+// AIN1 float-level calibration buttons: NEXT cycles the selected slot
+// (0..9), CAPTURE stores the current filtered AIN1 voltage into it.
+#define HMI_BTN_LVL_NEXT_ID     20
+#define HMI_BTN_LVL_CAPTURE_ID  21
+#define HMI_BTN_LVL_SAVE_ID     22
+#define HMI_BTN_LVL_RESET_ID    23
 
 // ---------------------------------------------------------------------------
 // Update timing / misc

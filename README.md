@@ -2,10 +2,13 @@
 
 Firmware for a marine rudder angle indicator:
 
-- **Sender**: 0–190 Ω variable resistor (-50° … +50°), wired as a bias
-  voltage divider producing a 0–12 V signal.
-- **ADC**: ADS1115, I2C, sender signal on `AIN0`; `AIN1`/`AIN2`/`AIN3` tied
-  to GND.
+- **Angle sensor**: Hall-effect angle sensor (-50° … +50°), 0–12 V output,
+  on `AIN0`. (Originally a 0–190 Ω variable resistor wired as a bias
+  voltage divider — the AIN0 pipeline below is unchanged from that design
+  and works the same with either sender.)
+- **Level sensor**: a second, floating (float-arm) 0–190 Ω sender with 10
+  discrete resistance steps, on `AIN1`.
+- **ADC**: ADS1115, I2C; `AIN2`/`AIN3` tied to GND.
 - **Display**: TJC HMI (TJC8048X243, "X2" series, Nextion-protocol
   compatible), driven over UART.
 - **MCU**: ESP32-C3, Arduino framework.
@@ -53,13 +56,25 @@ Sender wiper (0-12V) ----[ R_TOP 20k ]----+----[ R_SERIES 1k ]---- AIN0
   doesn't have to be 3.0 as long as `DIVIDER_RATIO` in `Config.h` is
   updated to match, and the resulting max voltage stays under the chosen
   PGA's full-scale.
-- `AIN1`/`AIN2`/`AIN3` should still be tied to GND as you planned — on the
-  ADS1115 all 4 inputs share one physical ADC core through a multiplexer,
-  so grounding unused channels avoids them injecting glitches when the mux
-  settles on `AIN0`.
+- `AIN2`/`AIN3` should still be tied to GND — on the ADS1115 all 4 inputs
+  share one physical ADC core through a multiplexer, so grounding unused
+  channels avoids them injecting glitches when the mux settles on a used
+  channel. `AIN1` is now used by the float-level sender (see below), so it
+  should no longer be grounded.
 
 If you use different resistor values, update `DIVIDER_RATIO`,
 `ADS1115_GAIN` and `ADS1115_FULLSCALE_V` in `Config.h` accordingly.
+
+### AIN1 — floating level sender
+
+Build the same style of divider + RC filter for the AIN1 float sender as
+for AIN0 above (its own `R_TOP`/`R_BOTTOM`/`R_SERIES`/`C`, tuned to that
+sender's actual supply/series-resistor circuit). Update `DIVIDER_RATIO_AIN1`
+and `ADS1115_GAIN_AIN1` in `Config.h` to match. Because the ADS1115's PGA
+gain register is shared by all 4 inputs, the firmware re-selects the
+correct gain immediately before sampling each channel — you don't need to
+do anything extra for this, it's just why the code calls `ads.setGain(...)`
+at the top of both sampling functions.
 
 ## Wiring summary
 
@@ -106,7 +121,74 @@ sketch, tunable from `Config.h`:
    `SENSOR FAULT` instead of a bogus angle (catches a disconnected or
    shorted sender).
 
-## Calibration
+## AIN1 float-level sender
+
+Implemented in `FloatLevel.h/.cpp`; does not touch any of the AIN0 angle
+code or state described above.
+
+Unlike the angle sender, this one only ever rests at
+`FLOAT_LEVEL_COUNT` (10) discrete resistance steps — it never sweeps
+continuously — so it's decoded differently from the angle channel:
+
+1. Same batch collection + trimmed-mean averaging as AIN0 (smaller batch:
+   `LEVEL_RAW_SAMPLES_PER_BATCH` = 10, `LEVEL_TRIM_COUNT` = 1 — a
+   discrete signal needs less averaging to resolve, just enough to reject
+   glitches).
+2. **No EMA.** Averaging across a transition between two real, different
+   levels would produce a fake in-between voltage; instead the reading is
+   snapped to whichever of the 10 calibrated voltages it's nearest to.
+3. **Debounce**: a level is only reported as changed once
+   `LEVEL_DEBOUNCE_BATCHES` (3) consecutive batches agree on the new
+   nearest level — this is what actually rejects noise/transition chatter
+   for a stepped sensor, in place of the EMA/slew-limiter used for the
+   continuous angle signal.
+4. **Fault detection**: same idea as AIN0 — a sender voltage outside a
+   plausible range shows `LEVEL FAULT` instead of a bogus reading.
+
+The displayed value is a 0–100% level (level 0 = 0%, level 9 = 100%,
+evenly spaced) sent to `n1.val` and `t2.txt`.
+
+### Calibrating the 10 levels
+
+The factory defaults are just evenly-spaced placeholders — real voltages
+depend on your float sender's specific fixed resistor/supply circuit, so
+it must be calibrated before use:
+
+**From USB serial** (115200 baud): move the float to each position in
+turn and, for each one, type the matching command and press Enter:
+
+- `LVL0`, `LVL1`, … `LVL9` — capture the current AIN1 voltage into that
+  slot (do this once per physical float position, lowest to highest).
+- `LVLSAVE` — write all 10 slots to flash.
+- `LVLRESET` — restore the evenly-spaced factory defaults.
+- `STATUS` — now also prints the current level-sender voltage, decoded
+  level, and the full 10-slot calibration table.
+
+**From the HMI**: add four buttons (IDs from `Config.h`:
+`HMI_BTN_LVL_NEXT_ID` = 20, `_CAPTURE_ID` = 21, `_SAVE_ID` = 22,
+`_RESET_ID` = 23):
+
+1. Press **NEXT** repeatedly to select slot 0, then move the float to its
+   lowest position and press **CAPTURE**.
+2. Press **NEXT** to select slot 1, move the float to its next position,
+   **CAPTURE** again — repeat through slot 9.
+3. Press **SAVE**.
+
+Status/confirmation messages ("SLOT 3 SET", "LVL SAVED", etc.) are written
+to the `t3` text component (`HMI_COMP_LEVEL_FAULT_TXT`) — separate from the
+`t1` field used by the angle calibration, so the two don't overwrite each
+other's messages.
+
+In your TJC project, also add:
+
+- A **Number** or **Gauge** component named `n1` — receives the level as a
+  0–100 integer percentage.
+- A **Text** component named `t2` — receives it as text, e.g. `"70%"`.
+- A **Text** component named `t3` — level fault/calibration status
+  messages.
+- The four calibration buttons above (optional, for field calibration).
+
+## AIN0 angle calibration
 
 A 3-point calibration (full-port / midships / full-starboard) is stored in
 NVS flash (`Preferences`, survives power loss / reflashing) and used with
@@ -154,6 +236,8 @@ In your TJC project (page 0), create:
   calibration confirmation messages.
 - Five buttons for calibration, IDs as listed above (optional, but
   recommended for field calibration without a laptop).
+- The `n1`/`t2`/`t3` components and four buttons for the AIN1 float-level
+  sender — see "AIN1 float-level sender" above.
 
 Set the HMI's UART baud rate (via the TJC Editor's device settings, or a
 one-time `bauds=115200` command sent from the editor's debug/format
@@ -169,8 +253,11 @@ double-check your unit's documentation/back label and update `HMI_BAUD`
 - `ANGLE_MIN_DEG` / `ANGLE_MAX_DEG` default to -50° / +50° as specified;
   `INVERT_ANGLE` in `Config.h` flips the sign convention if increasing
   sender voltage should read as decreasing angle on your installation.
-- Update rate is governed by the sampling batch: at 64 SPS with 15 samples
-  per batch, a full cycle (and HMI update) happens roughly every 230 ms —
-  more than fast enough for a mechanism that physically can't move faster
-  than tens of degrees per second, while keeping heavy oversampling for
-  noise rejection.
+- Update rate is governed by the sampling batches: the AIN0 angle batch
+  (~230 ms at 64 SPS / 15 samples) plus the AIN1 level batch (~155 ms at
+  64 SPS / 10 samples) run back-to-back each `loop()` iteration, since both
+  channels share one ADS1115 — roughly a 385 ms full cycle. Both channels
+  update well within what their physically slow-moving mechanisms need;
+  if you need a faster angle update independent of the level sensor, split
+  them across two separate ADS1115 chips (different I2C addresses) instead
+  of one shared one.
