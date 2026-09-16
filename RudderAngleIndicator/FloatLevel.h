@@ -1,6 +1,6 @@
 // FloatLevel.h
 // Decodes the AIN1 floating (float-arm) level sender: a 0-190 ohm sender
-// that only ever rests at FLOAT_LEVEL_COUNT (10) discrete resistance steps,
+// that only ever rests at FLOAT_LEVEL_COUNT discrete resistance steps,
 // rather than sweeping continuously like the AIN0 angle sender.
 //
 // Each level's expected sender voltage is calibrated and stored in NVS.

@@ -6,7 +6,7 @@ Firmware for a marine rudder angle indicator:
   on `AIN0`. (Originally a 0–190 Ω variable resistor wired as a bias
   voltage divider — the AIN0 pipeline below is unchanged from that design
   and works the same with either sender.)
-- **Level sensor**: a second, floating (float-arm) 0–190 Ω sender with 10
+- **Level sensor**: a second, floating (float-arm) 0–190 Ω sender with 13
   discrete resistance steps, on `AIN1`.
 - **ADC**: ADS1115, I2C; `AIN2`/`AIN3` tied to GND.
 - **Display**: TJC HMI (TJC8048X243, "X2" series, Nextion-protocol
@@ -127,7 +127,7 @@ Implemented in `FloatLevel.h/.cpp`; does not touch any of the AIN0 angle
 code or state described above.
 
 Unlike the angle sender, this one only ever rests at
-`FLOAT_LEVEL_COUNT` (10) discrete resistance steps — it never sweeps
+`FLOAT_LEVEL_COUNT` (13) discrete resistance steps — it never sweeps
 continuously — so it's decoded differently from the angle channel:
 
 1. Same batch collection + trimmed-mean averaging as AIN0 (smaller batch:
@@ -136,7 +136,7 @@ continuously — so it's decoded differently from the angle channel:
    glitches).
 2. **No EMA.** Averaging across a transition between two real, different
    levels would produce a fake in-between voltage; instead the reading is
-   snapped to whichever of the 10 calibrated voltages it's nearest to.
+   snapped to whichever of the 13 calibrated voltages it's nearest to.
 3. **Debounce**: a level is only reported as changed once
    `LEVEL_DEBOUNCE_BATCHES` (3) consecutive batches agree on the new
    nearest level — this is what actually rejects noise/transition chatter
@@ -145,10 +145,10 @@ continuously — so it's decoded differently from the angle channel:
 4. **Fault detection**: same idea as AIN0 — a sender voltage outside a
    plausible range shows `LEVEL FAULT` instead of a bogus reading.
 
-The displayed value is a 0–100% level (level 0 = 0%, level 9 = 100%,
+The displayed value is a 0–100% level (level 0 = 0%, level 12 = 100%,
 evenly spaced) sent to `n1.val` and `t2.txt`.
 
-### Calibrating the 10 levels
+### Calibrating the 13 levels
 
 The factory defaults are just evenly-spaced placeholders — real voltages
 depend on your float sender's specific fixed resistor/supply circuit, so
@@ -157,12 +157,12 @@ it must be calibrated before use:
 **From USB serial** (115200 baud): move the float to each position in
 turn and, for each one, type the matching command and press Enter:
 
-- `LVL0`, `LVL1`, … `LVL9` — capture the current AIN1 voltage into that
+- `LVL0`, `LVL1`, … `LVL12` — capture the current AIN1 voltage into that
   slot (do this once per physical float position, lowest to highest).
-- `LVLSAVE` — write all 10 slots to flash.
+- `LVLSAVE` — write all 13 slots to flash.
 - `LVLRESET` — restore the evenly-spaced factory defaults.
 - `STATUS` — now also prints the current level-sender voltage, decoded
-  level, and the full 10-slot calibration table.
+  level, and the full 13-slot calibration table.
 
 **From the HMI**: add four buttons (IDs from `Config.h`:
 `HMI_BTN_LVL_NEXT_ID` = 20, `_CAPTURE_ID` = 21, `_SAVE_ID` = 22,
@@ -171,7 +171,7 @@ turn and, for each one, type the matching command and press Enter:
 1. Press **NEXT** repeatedly to select slot 0, then move the float to its
    lowest position and press **CAPTURE**.
 2. Press **NEXT** to select slot 1, move the float to its next position,
-   **CAPTURE** again — repeat through slot 9.
+   **CAPTURE** again — repeat through slot 12.
 3. Press **SAVE**.
 
 Status/confirmation messages ("SLOT 3 SET", "LVL SAVED", etc.) are written

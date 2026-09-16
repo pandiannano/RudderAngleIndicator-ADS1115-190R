@@ -106,7 +106,7 @@
 #define ADS1115_GAIN_AIN1       GAIN_ONE
 #define DIVIDER_RATIO_AIN1      3.0f   // (R_TOP + R_BOTTOM) / R_BOTTOM, AIN1 divider
 
-#define FLOAT_LEVEL_COUNT       10     // number of discrete float positions
+#define FLOAT_LEVEL_COUNT       13     // number of discrete float positions
 
 // Fewer samples than the angle channel's batch: a discrete sensor does not
 // need heavy averaging to resolve fine steps, only enough to reject noise

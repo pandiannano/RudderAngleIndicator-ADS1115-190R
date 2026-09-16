@@ -61,6 +61,14 @@ static int   g_levelCalSlot = 0; // slot selected for HMI NEXT/CAPTURE buttons
   #define DBG(...)
 #endif
 
+static bool isAllDigits(const String &s) {
+  if (s.length() == 0) return false;
+  for (unsigned int i = 0; i < s.length(); i++) {
+    if (s[i] < '0' || s[i] > '9') return false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Calibration actions shared by the HMI buttons and the USB serial console
 // ---------------------------------------------------------------------------
@@ -160,10 +168,14 @@ static void pollDebugSerial() {
       else if (line == "RESET") doCalReset();
       else if (line == "LVLSAVE") doLvlSave();
       else if (line == "LVLRESET") doLvlReset();
-      else if (line.startsWith("LVL") && line.length() == 4 && line[3] >= '0' && line[3] <= '9') {
-        int idx = line[3] - '0';
-        floatLevel.captureLevel(idx, g_lastFloatSenderVolts);
-        DBG("[LVL] slot %d set to %.3f V (LVLSAVE to persist)\n", idx, g_lastFloatSenderVolts);
+      else if (line.startsWith("LVL") && line.length() > 3 && isAllDigits(line.substring(3))) {
+        int idx = line.substring(3).toInt();
+        if (idx >= 0 && idx < FLOAT_LEVEL_COUNT) {
+          floatLevel.captureLevel(idx, g_lastFloatSenderVolts);
+          DBG("[LVL] slot %d set to %.3f V (LVLSAVE to persist)\n", idx, g_lastFloatSenderVolts);
+        } else {
+          DBG("[CMD] LVL index out of range 0..%d\n", FLOAT_LEVEL_COUNT - 1);
+        }
       }
       else if (line == "STATUS") {
         const CalPoints &p = calibration.points();
