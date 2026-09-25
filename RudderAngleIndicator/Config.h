@@ -16,7 +16,7 @@
 #define I2C_CLOCK_HZ         400000UL
 
 #define ADS1115_I2C_ADDR     0x48   // ADDR pin tied to GND
-#define ADS1115_CHANNEL      0      // AIN0 = sender signal, AIN1..AIN3 = GND
+#define ADS1115_CHANNEL      0      // AIN0 = angle sensor signal
 
 // Full-scale range of the ADS1115 PGA. The external divider (see below) MUST
 // bring the 0-12V sender signal below this value with some safety margin.
@@ -167,11 +167,44 @@
 #define HMI_BTN_CAL_RESET_ID   14
 
 // AIN1 float-level calibration buttons: NEXT cycles the selected slot
-// (0..9), CAPTURE stores the current filtered AIN1 voltage into it.
+// (0..FLOAT_LEVEL_COUNT-1), CAPTURE stores the current filtered AIN1
+// voltage into it.
 #define HMI_BTN_LVL_NEXT_ID     20
 #define HMI_BTN_LVL_CAPTURE_ID  21
 #define HMI_BTN_LVL_SAVE_ID     22
 #define HMI_BTN_LVL_RESET_ID    23
+
+// ---------------------------------------------------------------------------
+// AIN2/AIN3 ADC reference self-check — new, additive only. AIN2 is now
+// wired straight to GND and AIN3 straight to AVDD (3.3V) as known reference
+// levels; periodically reading them back and comparing against the
+// expected values is a simple self-test that catches a failed/miswired
+// ADS1115, a bad I2C link, or the 3.3V rail sagging — all without touching
+// the AIN0/AIN1 sampling functions above (those already re-assert their
+// own required PGA gain at the top of each call, so a third channel using
+// yet another gain slots in the same way).
+// ---------------------------------------------------------------------------
+#define AIN2_CHANNEL            2      // AIN2 = tied to GND (expect ~0V)
+#define AIN3_CHANNEL            3      // AIN3 = tied to AVDD/3.3V (expect ~3.3V)
+
+// 0-3.3V comfortably fits the same +-4.096V PGA range used elsewhere.
+#define ADS1115_GAIN_REFCHK     GAIN_ONE
+
+#define REFCHK_SAMPLES_PER_BATCH  5    // small batch: these are static levels
+#define REFCHK_TRIM_COUNT         1
+
+// This is a slow health check on two levels that never change, so it does
+// not need to run every loop() iteration like the AIN0/AIN1 channels do —
+// it self-paces via millis() to this interval instead, keeping the added
+// overhead on the existing loop negligible.
+#define REFCHK_INTERVAL_MS        5000UL
+
+#define REFCHK_GND_EXPECTED_V     0.0f
+#define REFCHK_GND_TOLERANCE_V    0.05f
+#define REFCHK_AVDD_EXPECTED_V    3.30f
+#define REFCHK_AVDD_TOLERANCE_V   0.15f
+
+#define HMI_COMP_REFCHK_TXT     "t4"   // ADC self-check fault/status text
 
 // ---------------------------------------------------------------------------
 // Update timing / misc

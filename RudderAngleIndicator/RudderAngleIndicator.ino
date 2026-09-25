@@ -1,8 +1,9 @@
 // RudderAngleIndicator.ino
 //
 // ESP32-C3 + ADS1115 (I2C) + TJC/Nextion-protocol HMI (UART)
-// 0-190 ohm sender wired as a 0-12V bias/voltage divider -> AIN0.
-// AIN1/AIN2/AIN3 tied to GND as specified by the hardware design.
+// AIN0 = angle sensor (0-360 deg, 0-3.3V output); AIN1 = floating level
+// sender; AIN2 = tied to GND; AIN3 = tied to AVDD/3.3V (ADC self-check
+// references, see the AIN2/AIN3 addition note below).
 //
 // Noise-reduction pipeline (see Filtering.h / Config.h for the tunables):
 //   1. ADS1115 PGA gain chosen to match the divided-down signal swing, and
@@ -21,11 +22,18 @@
 // serial console - see README.md.
 //
 // AIN1 addition: a second sender, a floating (float-arm) level sender that
-// only ever rests at 10 discrete resistance steps, is now also read on
-// AIN1 and decoded/filtered independently (see FloatLevel.h). This did not
-// require changing the AIN0 angle pipeline above, other than re-asserting
-// the ADS1115's PGA gain before each AIN0 batch, since the gain register is
+// only ever rests at a number of discrete resistance steps (see
+// FLOAT_LEVEL_COUNT in Config.h), is now also read on AIN1 and
+// decoded/filtered independently (see FloatLevel.h). This did not require
+// changing the AIN0 angle pipeline above, other than re-asserting the
+// ADS1115's PGA gain before each AIN0 batch, since the gain register is
 // shared by all four ADS1115 inputs and the AIN1 code now also changes it.
+//
+// AIN2/AIN3 addition: AIN2 is wired to GND and AIN3 to AVDD (3.3V) as known
+// reference levels. checkAdcReferenceRails() periodically reads both back
+// and flags a fault if either is out of tolerance — a simple self-test for
+// a failed ADS1115, bad I2C link, or sagging 3.3V rail. Same shared-gain
+// pattern as AIN1; does not touch the AIN0/AIN1 code either.
 
 #include <math.h>
 #include <Wire.h>
@@ -51,6 +59,12 @@ static float g_lastFloatSenderVolts = 0.0f;
 static int   g_lastDisplayedLevel = -1;
 static bool  g_lastLevelFaultState = false;
 static int   g_levelCalSlot = 0; // slot selected for HMI NEXT/CAPTURE buttons
+
+static unsigned long g_lastRefCheckMs = 0;
+static float g_lastGndVolts  = NAN;
+static float g_lastAvddVolts = NAN;
+static bool  g_refCheckFault = false;
+static void  checkAdcReferenceRails(bool force = false); // defined below; used by pollDebugSerial
 
 // ---------------------------------------------------------------------------
 // Debug helper
@@ -168,6 +182,7 @@ static void pollDebugSerial() {
       else if (line == "RESET") doCalReset();
       else if (line == "LVLSAVE") doLvlSave();
       else if (line == "LVLRESET") doLvlReset();
+      else if (line == "ADCCHK") checkAdcReferenceRails(true);
       else if (line.startsWith("LVL") && line.length() > 3 && isAllDigits(line.substring(3))) {
         int idx = line.substring(3).toInt();
         if (idx >= 0 && idx < FLOAT_LEVEL_COUNT) {
@@ -186,8 +201,12 @@ static void pollDebugSerial() {
         for (int i = 0; i < FLOAT_LEVEL_COUNT; i++) {
           DBG("%.2f%s", floatLevel.levelVoltage(i), (i < FLOAT_LEVEL_COUNT - 1) ? "," : "]\n");
         }
+        DBG("[STATUS] adcRef %s gnd=%.3fV (expect %.2f+-%.2f) avdd=%.3fV (expect %.2f+-%.2f)\n",
+            g_refCheckFault ? "FAIL" : "OK", g_lastGndVolts,
+            REFCHK_GND_EXPECTED_V, REFCHK_GND_TOLERANCE_V, g_lastAvddVolts,
+            REFCHK_AVDD_EXPECTED_V, REFCHK_AVDD_TOLERANCE_V);
       } else if (line.length() > 0) {
-        DBG("[CMD] unknown: %s (try MIN/CENTER/MAX/SAVE/RESET/LVL0../LVL9/LVLSAVE/LVLRESET/STATUS)\n", line.c_str());
+        DBG("[CMD] unknown: %s (try MIN/CENTER/MAX/SAVE/RESET/LVL0../LVL12/LVLSAVE/LVLRESET/ADCCHK/STATUS)\n", line.c_str());
       }
       line = "";
     } else {
@@ -314,6 +333,60 @@ static void sampleFloatLevelAndUpdate() {
 }
 
 // ---------------------------------------------------------------------------
+// AIN2/AIN3 ADC reference self-check (new). AIN2 is tied to GND and AIN3 to
+// AVDD (3.3V) as known-good reference levels; reading them back and
+// comparing to the expected values catches a failed/miswired ADS1115, a
+// flaky I2C link, or a sagging 3.3V rail. This is a slow/static check, so
+// it self-paces on REFCHK_INTERVAL_MS via millis() instead of running every
+// loop() iteration like the AIN0/AIN1 channels.
+// ---------------------------------------------------------------------------
+static void checkAdcReferenceRails(bool force) {
+  unsigned long now = millis();
+  if (!force && (now - g_lastRefCheckMs) < REFCHK_INTERVAL_MS) return;
+  g_lastRefCheckMs = now;
+
+  ads.setGain(ADS1115_GAIN_REFCHK);
+
+  float gndSamples[REFCHK_SAMPLES_PER_BATCH];
+  for (int i = 0; i < REFCHK_SAMPLES_PER_BATCH; i++) {
+    int16_t raw = ads.readADC_SingleEnded(AIN2_CHANNEL);
+    gndSamples[i] = ads.computeVolts(raw);
+    hmiPoll();
+    pollDebugSerial();
+  }
+  g_lastGndVolts = trimmedMean(gndSamples, REFCHK_SAMPLES_PER_BATCH, REFCHK_TRIM_COUNT);
+
+  float avddSamples[REFCHK_SAMPLES_PER_BATCH];
+  for (int i = 0; i < REFCHK_SAMPLES_PER_BATCH; i++) {
+    int16_t raw = ads.readADC_SingleEnded(AIN3_CHANNEL);
+    avddSamples[i] = ads.computeVolts(raw);
+    hmiPoll();
+    pollDebugSerial();
+  }
+  g_lastAvddVolts = trimmedMean(avddSamples, REFCHK_SAMPLES_PER_BATCH, REFCHK_TRIM_COUNT);
+
+  bool gndOk  = fabsf(g_lastGndVolts  - REFCHK_GND_EXPECTED_V)  <= REFCHK_GND_TOLERANCE_V;
+  bool avddOk = fabsf(g_lastAvddVolts - REFCHK_AVDD_EXPECTED_V) <= REFCHK_AVDD_TOLERANCE_V;
+  bool fault = !(gndOk && avddOk);
+
+  if (fault != g_refCheckFault || force) {
+    g_refCheckFault = fault;
+    if (fault) {
+      char msg[32];
+      if (!gndOk && !avddOk) snprintf(msg, sizeof(msg), "ADC REF FAIL GND+VDD");
+      else if (!gndOk)       snprintf(msg, sizeof(msg), "ADC REF FAIL GND=%.2fV", g_lastGndVolts);
+      else                   snprintf(msg, sizeof(msg), "ADC REF FAIL VDD=%.2fV", g_lastAvddVolts);
+      hmiSendText(HMI_COMP_REFCHK_TXT, msg);
+    } else {
+      hmiSendText(HMI_COMP_REFCHK_TXT, "");
+    }
+  }
+
+  DBG("[ADCCHK] %s gnd=%.3fV avdd=%.3fV\n", fault ? "FAIL" : "OK",
+      g_lastGndVolts, g_lastAvddVolts);
+}
+
+// ---------------------------------------------------------------------------
 void setup() {
 #if ENABLE_SERIAL_DEBUG
   Serial.begin(SERIAL_DEBUG_BAUD);
@@ -334,8 +407,10 @@ void setup() {
   floatLevel.begin();
   hmiBegin();
 
+  checkAdcReferenceRails(true); // baseline reading + print at boot
+
   DBG("[INIT] ready. Serial console: MIN / CENTER / MAX / SAVE / RESET / "
-      "LVL0../LVL9 / LVLSAVE / LVLRESET / STATUS\n");
+      "LVL0../LVL12 / LVLSAVE / LVLRESET / ADCCHK / STATUS\n");
 }
 
 void loop() {
@@ -343,4 +418,5 @@ void loop() {
   pollDebugSerial();
   sampleFilterAndUpdate();
   sampleFloatLevelAndUpdate();
+  checkAdcReferenceRails(); // self-paced; only actually samples every REFCHK_INTERVAL_MS
 }

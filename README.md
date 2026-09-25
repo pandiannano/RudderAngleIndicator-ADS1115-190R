@@ -2,13 +2,18 @@
 
 Firmware for a marine rudder angle indicator:
 
-- **Angle sensor**: Hall-effect angle sensor (-50° … +50°), 0–12 V output,
-  on `AIN0`. (Originally a 0–190 Ω variable resistor wired as a bias
-  voltage divider — the AIN0 pipeline below is unchanged from that design
-  and works the same with either sender.)
+- **Angle sensor**: a 0–360° rotary angle sensor, powered from 3.3V with a
+  0–3.3V output proportional to angle, on `AIN0`. (Originally a 0–190 Ω
+  variable resistor, then a Hall-effect sensor — the AIN0 pipeline below is
+  unchanged from that design and works the same with any of these, since
+  the 3-point calibration captures whatever real voltage range the rudder's
+  actual ±50° swing produces, out of the sensor's full 360° span.)
 - **Level sensor**: a second, floating (float-arm) 0–190 Ω sender with 13
   discrete resistance steps, on `AIN1`.
-- **ADC**: ADS1115, I2C; `AIN2`/`AIN3` tied to GND.
+- **ADC self-check references**: `AIN2` tied to GND, `AIN3` tied to
+  AVDD/3.3V — known-good levels the firmware reads back periodically to
+  verify the ADS1115 and 3.3V rail are healthy.
+- **ADC**: ADS1115, I2C.
 - **Display**: TJC HMI (TJC8048X243, "X2" series, Nextion-protocol
   compatible), driven over UART.
 - **MCU**: ESP32-C3, Arduino framework.
@@ -56,11 +61,11 @@ Sender wiper (0-12V) ----[ R_TOP 20k ]----+----[ R_SERIES 1k ]---- AIN0
   doesn't have to be 3.0 as long as `DIVIDER_RATIO` in `Config.h` is
   updated to match, and the resulting max voltage stays under the chosen
   PGA's full-scale.
-- `AIN2`/`AIN3` should still be tied to GND — on the ADS1115 all 4 inputs
-  share one physical ADC core through a multiplexer, so grounding unused
-  channels avoids them injecting glitches when the mux settles on a used
-  channel. `AIN1` is now used by the float-level sender (see below), so it
-  should no longer be grounded.
+- None of `AIN1`/`AIN2`/`AIN3` are grounded anymore — all four ADS1115
+  inputs are now in active use (see below). On the ADS1115 all 4 inputs
+  share one physical ADC core through a multiplexer, so an unused, floating
+  input would otherwise inject glitches when the mux settles on it; that's
+  no longer a concern here since every channel is driven by something.
 
 If you use different resistor values, update `DIVIDER_RATIO`,
 `ADS1115_GAIN` and `ADS1115_FULLSCALE_V` in `Config.h` accordingly.
@@ -75,6 +80,23 @@ gain register is shared by all 4 inputs, the firmware re-selects the
 correct gain immediately before sampling each channel — you don't need to
 do anything extra for this, it's just why the code calls `ads.setGain(...)`
 at the top of both sampling functions.
+
+### AIN2/AIN3 — ADC reference self-check
+
+No divider is needed here — both are already within the ADS1115's input
+range:
+
+- `AIN2` → straight to GND (expected reading: 0V).
+- `AIN3` → straight to AVDD/3.3V (expected reading: 3.3V). A small
+  decoupling cap (e.g. 100nF) from AIN3 to GND is good practice to filter
+  regulator switching noise, but isn't required for this to work.
+
+The ADS1115 must be powered from the same 3.3V rail that AIN3 is checking
+(i.e. `AVDD` = the ADS1115's own `VDD`) for this to be a meaningful
+self-test — feeding it a rail voltage right at `VDD` is within the
+ADS1115's rated input range (`GND-0.3V` to `VDD+0.3V`), just with no
+headroom above it, which is fine since AIN3 is only ever expected to sit at
+that one fixed level.
 
 ## Wiring summary
 
@@ -188,6 +210,44 @@ In your TJC project, also add:
   messages.
 - The four calibration buttons above (optional, for field calibration).
 
+## AIN2/AIN3 ADC reference self-check
+
+Implemented as `checkAdcReferenceRails()` in the main sketch; does not
+touch the AIN0 or AIN1 code, state, or timing (it's not part of either of
+their per-batch loops).
+
+`AIN2` (tied to GND) and `AIN3` (tied to AVDD/3.3V) are known, fixed
+voltages — reading them back and comparing to the expected values is a
+built-in health check that requires no calibration:
+
+- Runs every `REFCHK_INTERVAL_MS` (default 5000 ms), not every `loop()`
+  iteration — these levels never change, so there's no reason to spend
+  cycles on it any faster; this keeps its overhead on the AIN0/AIN1 update
+  rate negligible.
+- Each check takes a small trimmed-mean batch on each channel
+  (`REFCHK_SAMPLES_PER_BATCH` = 5, `REFCHK_TRIM_COUNT` = 1).
+- GND is expected at `REFCHK_GND_EXPECTED_V` (0V) ± `REFCHK_GND_TOLERANCE_V`
+  (0.05V); AVDD at `REFCHK_AVDD_EXPECTED_V` (3.30V) ±
+  `REFCHK_AVDD_TOLERANCE_V` (0.15V) — adjust in `Config.h` if your actual
+  3.3V rail runs consistently outside that window.
+- On failure, a message ("ADC REF FAIL GND=...", "...VDD=...", or
+  "...GND+VDD" if both are off) is written to the `t4` text component
+  (`HMI_COMP_REFCHK_TXT`); it's cleared automatically once readings return
+  to normal.
+- Runs once at boot (so you get an immediate pass/fail at startup) and then
+  on its own schedule from then on.
+
+**From USB serial**: type `ADCCHK` to force an immediate check and print
+the measured GND/AVDD voltages right away instead of waiting for the next
+scheduled one; `STATUS` also now includes the last measured values and
+pass/fail state.
+
+In your TJC project, add one more component:
+
+- A **Text** component named `t4` — ADC self-check fault messages. No
+  calibration buttons are needed for this one, since it checks against
+  fixed, known-in-advance voltages rather than anything sender-specific.
+
 ## AIN0 angle calibration
 
 A 3-point calibration (full-port / midships / full-starboard) is stored in
@@ -238,6 +298,8 @@ In your TJC project (page 0), create:
   recommended for field calibration without a laptop).
 - The `n1`/`t2`/`t3` components and four buttons for the AIN1 float-level
   sender — see "AIN1 float-level sender" above.
+- The `t4` component for the AIN2/AIN3 ADC self-check — see "AIN2/AIN3 ADC
+  reference self-check" above.
 
 Set the HMI's UART baud rate (via the TJC Editor's device settings, or a
 one-time `bauds=115200` command sent from the editor's debug/format
@@ -250,14 +312,18 @@ double-check your unit's documentation/back label and update `HMI_BAUD`
 
 ## Notes / assumptions
 
-- `ANGLE_MIN_DEG` / `ANGLE_MAX_DEG` default to -50° / +50° as specified;
-  `INVERT_ANGLE` in `Config.h` flips the sign convention if increasing
-  sender voltage should read as decreasing angle on your installation.
+- `ANGLE_MIN_DEG` / `ANGLE_MAX_DEG` default to -50° / +50° — the rudder's
+  operating range, not the angle sensor's full mechanical span (0-360° for
+  the current sensor). `INVERT_ANGLE` in `Config.h` flips the sign
+  convention if increasing sender voltage should read as decreasing angle
+  on your installation.
 - Update rate is governed by the sampling batches: the AIN0 angle batch
   (~230 ms at 64 SPS / 15 samples) plus the AIN1 level batch (~155 ms at
   64 SPS / 10 samples) run back-to-back each `loop()` iteration, since both
-  channels share one ADS1115 — roughly a 385 ms full cycle. Both channels
-  update well within what their physically slow-moving mechanisms need;
-  if you need a faster angle update independent of the level sensor, split
-  them across two separate ADS1115 chips (different I2C addresses) instead
-  of one shared one.
+  channels share one ADS1115 — roughly a 385 ms full cycle. The AIN2/AIN3
+  self-check adds one more small batch (~80 ms), but only once every
+  `REFCHK_INTERVAL_MS` (5 s default), so its effect on the normal cycle
+  time is negligible. All of this is well within what the physically
+  slow-moving rudder and float mechanisms need; if you need a faster angle
+  update independent of everything else, split the angle sensor onto a
+  second ADS1115 (different I2C address) instead of sharing one.
