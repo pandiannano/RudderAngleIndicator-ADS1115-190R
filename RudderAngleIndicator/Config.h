@@ -266,22 +266,16 @@
 
 #define FAULT_BLINK_INTERVAL_MS     500UL  // on/off toggle period while a fault is active
 
-#define FAULT_BUZZER_ON_MS          2000UL // 2s beep
-#define FAULT_BUZZER_OFF_MS         8000UL // 8s silence, then repeats
+#define FAULT_BUZZER_ON_MS          2000UL // beep duration
+#define FAULT_BUZZER_OFF_MS         8000UL // silence after each beep, then repeats
 
-// IMPORTANT: the exact instruction to sound/silence the X2's onboard buzzer
-// could not be confirmed from the datasheet in this environment (network
-// access to wiki.tjc1688.com is blocked here) — these are a best-effort
-// guess, NOT a verified command. TEST them first (e.g. by typing them into
-// the TJC Editor's debug/serial panel while connected to the display) before
-// relying on them. If they do nothing on your unit, see the README for a
-// guaranteed-to-work fallback: a Timer component in your TJC project whose
-// event script uses the Editor's own "Buzzer" instruction (pick it from the
-// Editor's instruction list, where it's correct for your exact firmware),
-// enabled/disabled by the firmware via the standard `tm<N>.en=` command
-// instead of these two.
-#define HMI_CMD_BUZZER_ON           "bz=1"
-#define HMI_CMD_BUZZER_OFF          "bz=0"
+// TJC's documented buzzer instruction (http://wiki.tjc1688.com/commands/beep.html)
+// is `beep <time>`, time in milliseconds — a self-timed, fire-and-forget
+// pulse: the buzzer sounds for exactly that long and then stops on its own;
+// there is no separate "off" instruction, and none is needed. Requires a
+// model with a physical onboard buzzer (a black round/square component on
+// the back of the board) — screens without one (or with only a speaker)
+// don't support this instruction at all.
 
 // ---------------------------------------------------------------------------
 // Update timing / misc

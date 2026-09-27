@@ -334,36 +334,24 @@ separate fault-text fields with ONE shared field, per request — `t1` and
   with the standard `vis` instruction every `FAULT_BLINK_INTERVAL_MS`
   (default 500 ms — 1 Hz blink). It's left visible (but empty) once the
   fault clears, rather than possibly stuck hidden mid-blink.
-- **Buzzer**: while any fault is active, the X2's onboard buzzer is driven
-  in a repeating cycle — `FAULT_BUZZER_ON_MS` (2000 ms) on, then
-  `FAULT_BUZZER_OFF_MS` (8000 ms) off, repeating for as long as the fault
-  persists, and forced off the instant it clears.
+- **Buzzer**: while any fault is active, the X2's onboard buzzer beeps for
+  `FAULT_BUZZER_ON_MS` (2000 ms), then stays silent for `FAULT_BUZZER_OFF_MS`
+  (8000 ms), repeating for as long as the fault persists. Uses TJC's
+  documented `beep <time_ms>` instruction
+  ([wiki.tjc1688.com/commands/beep.html](http://wiki.tjc1688.com/commands/beep.html))
+  — a self-timed, fire-and-forget pulse: the firmware fires one `beep 2000`
+  at the start of each 10-second cycle and then just waits; the buzzer
+  stops on its own after 2 seconds, so there's no separate "off" instruction
+  to send (and none exists). If a fault clears mid-beep, the pulse already
+  in progress simply finishes on its own within at most 2 seconds.
+- **Requires a physical onboard buzzer** — per TJC's docs, this only works
+  on models with an actual buzzer component (a black round/square part on
+  the back of the board); a display with only a speaker doesn't support
+  this instruction. Volume and frequency are both fixed (not adjustable).
 - The AIN2/AIN3 ADC self-check keeps its own separate `t4` field rather
   than joining this shared one — it's an internal self-test rather than a
   "sensor is faulty" condition in the sense this was asked for. Say so if
   you'd like it folded in too.
-
-**Important — verify the buzzer command yourself.** The exact instruction
-to sound/silence the X2's onboard buzzer could not be confirmed from the
-datasheet in this environment (network access to the TJC wiki is blocked
-here), so `HMI_CMD_BUZZER_ON` / `HMI_CMD_BUZZER_OFF` in `Config.h`
-(currently `"bz=1"` / `"bz=0"`) are a best-effort guess, not a verified
-command — the timing logic around them is solid, but test that these two
-strings actually make your unit beep (e.g. by typing them into the TJC
-Editor's debug/serial panel while connected to the display) before relying
-on it. If they don't do anything on your firmware version, here's a
-guaranteed-to-work fallback:
-
-1. In your TJC project, add a **Timer** component (e.g. `tm0`), initially
-   disabled, with whatever period you like (its period isn't used for the
-   on/off timing — the firmware still drives that).
-2. In `tm0`'s Timer Event, add the Editor's own **Buzzer** instruction
-   (select it from the Editor's instruction list — the correct syntax for
-   your exact firmware version will be offered there, which is safer than a
-   guess made outside your toolchain).
-3. Replace the two lines in `setBuzzer()` (in the `.ino`) that send
-   `HMI_CMD_BUZZER_ON`/`OFF` with `tm0.en=1` / `tm0.en=0` instead — the
-   rest of the on/off cadence logic needs no other changes.
 
 In your TJC project, add one more component for this feature:
 

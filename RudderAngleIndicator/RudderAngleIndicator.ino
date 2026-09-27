@@ -49,9 +49,10 @@
 // Unified fault indicator addition: the AIN0 and AIN1 faults above now
 // share ONE blinking HMI text field (updateSharedFaultDisplay(), t5)
 // instead of writing to their own separate fault texts, and drive the X2's
-// onboard buzzer in a repeating on/off pattern while any fault is active
-// (updateFaultBuzzer()) — see the Config.h comments by
-// HMI_COMP_FAULT_SHARED_TXT and HMI_CMD_BUZZER_ON/OFF.
+// onboard buzzer via TJC's documented `beep <ms>` instruction in a
+// repeating on/off pattern while any fault is active (updateFaultBuzzer())
+// — see the Config.h comments by HMI_COMP_FAULT_SHARED_TXT and
+// FAULT_BUZZER_ON_MS/OFF_MS.
 
 #include <math.h>
 #include <Wire.h>
@@ -497,17 +498,21 @@ static void updateSharedFaultDisplay() {
 }
 
 // ---------------------------------------------------------------------------
-// X2 onboard buzzer: repeating FAULT_BUZZER_ON_MS-on / FAULT_BUZZER_OFF_MS-
-// off pattern while any fault is active (new). See the IMPORTANT note by
-// HMI_CMD_BUZZER_ON/OFF in Config.h — those two command strings are a
-// best-effort guess pending verification against your board's datasheet.
+// X2 onboard buzzer: repeating FAULT_BUZZER_ON_MS-beep /
+// FAULT_BUZZER_OFF_MS-silence pattern while any fault is active (new).
+// TJC's documented `beep <ms>` instruction is a self-timed, fire-and-forget
+// pulse (http://wiki.tjc1688.com/commands/beep.html) — the buzzer sounds
+// for exactly the given duration and stops on its own, so this only needs
+// to fire one `beep` at the start of each cycle and then wait; there's no
+// "stop" instruction to send, and none is needed (a beep in progress when
+// the fault clears just finishes on its own, at most FAULT_BUZZER_ON_MS
+// later).
 // ---------------------------------------------------------------------------
-static bool g_buzzerActive = false; // whether the on/off cadence is running at all
-static bool g_buzzerOnPhase = false;
-static unsigned long g_buzzerPhaseStartMs = 0;
+static bool g_buzzerActive = false; // whether the repeating cycle is running
+static unsigned long g_buzzerCycleStartMs = 0;
 
-static void setBuzzer(bool on) {
-  hmiSendRaw(on ? HMI_CMD_BUZZER_ON : HMI_CMD_BUZZER_OFF);
+static void fireBeep(unsigned long ms) {
+  hmiSendRaw(String("beep ") + ms);
 }
 
 static void updateFaultBuzzer() {
@@ -515,31 +520,21 @@ static void updateFaultBuzzer() {
   unsigned long now = millis();
 
   if (!anyFault) {
-    if (g_buzzerActive) {
-      setBuzzer(false); // never leave the buzzer stuck on once the fault clears
-      g_buzzerActive = false;
-      g_buzzerOnPhase = false;
-    }
+    g_buzzerActive = false;
     return;
   }
 
   if (!g_buzzerActive) {
     g_buzzerActive = true;
-    g_buzzerOnPhase = true;
-    g_buzzerPhaseStartMs = now;
-    setBuzzer(true);
+    g_buzzerCycleStartMs = now;
+    fireBeep(FAULT_BUZZER_ON_MS);
     return;
   }
 
-  unsigned long elapsed = now - g_buzzerPhaseStartMs;
-  if (g_buzzerOnPhase && elapsed >= FAULT_BUZZER_ON_MS) {
-    g_buzzerOnPhase = false;
-    g_buzzerPhaseStartMs = now;
-    setBuzzer(false);
-  } else if (!g_buzzerOnPhase && elapsed >= FAULT_BUZZER_OFF_MS) {
-    g_buzzerOnPhase = true;
-    g_buzzerPhaseStartMs = now;
-    setBuzzer(true);
+  unsigned long cycleLen = FAULT_BUZZER_ON_MS + FAULT_BUZZER_OFF_MS;
+  if (now - g_buzzerCycleStartMs >= cycleLen) {
+    g_buzzerCycleStartMs = now;
+    fireBeep(FAULT_BUZZER_ON_MS);
   }
 }
 
