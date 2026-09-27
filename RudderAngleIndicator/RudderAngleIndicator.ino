@@ -363,12 +363,21 @@ static void sampleFilterAndUpdate() {
 
     DBG("[ANGLE] senderV=%.3f filtV=%.3f angle=%.2f\n",
         senderVolts, filteredSenderVolts, smoothedAngle);
-  } else if (g_angleFaultWasOpen) {
-    DBG("[FAULT] angle wire open/floating (batch spread > %.2fV, latched %d/%d)\n",
-        (float)ANGLE_NOISE_FAULT_V, g_angleFaultClearStreak, FAULT_CLEAR_CONFIRM_BATCHES);
   } else if (fault) {
-    DBG("[FAULT] senderV=%.3f out of plausible range (cal=%d abs=%d)\n",
-        senderVolts, calRangeFault, rangeFault && !calRangeFault);
+    // g_angleFaultWasOpen only records which reason last triggered the
+    // latch and is never reset on its own, so it must be checked inside
+    // `fault`, not as a sibling `else if` — otherwise, once the sensor
+    // recovers to a reading close enough to the pre-fault one that
+    // angleChangedEnough stays false, this would keep printing a fault
+    // message forever even though `fault` (and the buzzer/HMI, which
+    // correctly read the same flag) have already gone back to normal.
+    if (g_angleFaultWasOpen) {
+      DBG("[FAULT] angle wire open/floating (batch spread > %.2fV, latched %d/%d)\n",
+          (float)ANGLE_NOISE_FAULT_V, g_angleFaultClearStreak, FAULT_CLEAR_CONFIRM_BATCHES);
+    } else {
+      DBG("[FAULT] senderV=%.3f out of plausible range (cal=%d abs=%d)\n",
+          senderVolts, calRangeFault, rangeFault && !calRangeFault);
+    }
   }
 }
 
