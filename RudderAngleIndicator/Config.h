@@ -9,6 +9,17 @@
 #include <Adafruit_ADS1X15.h>
 
 // ---------------------------------------------------------------------------
+// Build option — same board, same source file: pick which sensors this
+// build includes by changing ACTIVE_BUILD_OPTION below, then reflash.
+//   BUILD_OPTION_ANGLE_ONLY      -> only the AIN0 rudder angle indicator
+//   BUILD_OPTION_ANGLE_AND_LEVEL -> rudder angle (AIN0) + oil/level (AIN1)
+// ---------------------------------------------------------------------------
+#define BUILD_OPTION_ANGLE_ONLY        1
+#define BUILD_OPTION_ANGLE_AND_LEVEL   2
+
+#define ACTIVE_BUILD_OPTION   BUILD_OPTION_ANGLE_AND_LEVEL   // <-- change this line
+
+// ---------------------------------------------------------------------------
 // I2C bus (ADS1115)
 // ---------------------------------------------------------------------------
 #define I2C_SDA_PIN          8      // change to match your ESP32-C3 board

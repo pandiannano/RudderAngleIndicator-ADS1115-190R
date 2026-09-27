@@ -77,6 +77,10 @@
 // window — which, for a sensor whose full mechanical range is much wider
 // than what you actually use (0-360 degrees vs. a 135-225 degree operating
 // window here), is the expected case.
+//
+// Build option: ACTIVE_BUILD_OPTION in Config.h selects, at compile time,
+// whether this build is angle-only or angle+level — see loop() below,
+// where sampleFloatLevelAndUpdate() is the only thing gated on it.
 
 #include <math.h>
 #include <Wire.h>
@@ -650,7 +654,9 @@ void loop() {
   hmiPoll();
   pollDebugSerial();
   sampleFilterAndUpdate();
+#if ACTIVE_BUILD_OPTION == BUILD_OPTION_ANGLE_AND_LEVEL
   sampleFloatLevelAndUpdate();
+#endif
   checkAdcReferenceRails(); // self-paced; only actually samples every REFCHK_INTERVAL_MS
   updateSharedFaultDisplay();
   updateFaultBuzzer();
