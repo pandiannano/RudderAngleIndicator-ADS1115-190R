@@ -45,6 +45,13 @@
 // new batchSpread() helper in Filtering.h/.cpp). Both are additive checks
 // layered on top of the existing range-based fault checks; see the
 // Config.h comments by those two constants for the full reasoning.
+//
+// Unified fault indicator addition: the AIN0 and AIN1 faults above now
+// share ONE blinking HMI text field (updateSharedFaultDisplay(), t5)
+// instead of writing to their own separate fault texts, and drive the X2's
+// onboard buzzer in a repeating on/off pattern while any fault is active
+// (updateFaultBuzzer()) — see the Config.h comments by
+// HMI_COMP_FAULT_SHARED_TXT and HMI_CMD_BUZZER_ON/OFF.
 
 #include <math.h>
 #include <Wire.h>
@@ -76,6 +83,9 @@ static float g_lastGndVolts  = NAN;
 static float g_lastAvddVolts = NAN;
 static bool  g_refCheckFault = false;
 static void  checkAdcReferenceRails(bool force = false); // defined below; used by pollDebugSerial
+
+static bool g_lastAngleOpenFault = false; // set by sampleFilterAndUpdate(), read by updateSharedFaultDisplay()
+static bool g_lastFloatOpenFault = false; // set by sampleFloatLevelAndUpdate(), read by updateSharedFaultDisplay()
 
 // ---------------------------------------------------------------------------
 // Debug helper
@@ -274,10 +284,12 @@ static void sampleFilterAndUpdate() {
       isnan(g_lastDisplayedAngle) ||
       fabsf(smoothedAngle - g_lastDisplayedAngle) >= DISPLAY_DEADBAND_DEG;
 
-  if (fault != g_lastFaultState) {
-    hmiSendText(HMI_COMP_FAULT_TXT, fault ? (openFault ? "ANGLE OPEN FAULT" : "SENSOR FAULT") : "");
-    g_lastFaultState = fault;
-  }
+  // Fault display now goes through the single shared fault field (see
+  // updateSharedFaultDisplay(), called once per loop() after both sampling
+  // functions) instead of writing HMI_COMP_FAULT_TXT directly here — that
+  // field is used only for calibration-confirmation messages now.
+  g_lastAngleOpenFault = openFault;
+  g_lastFaultState = fault;
 
   if (!fault && angleChangedEnough) {
     g_lastDisplayedAngle = smoothedAngle;
@@ -334,10 +346,12 @@ static void sampleFloatLevelAndUpdate() {
 
   bool fault = rangeFault || openFault;
 
-  if (fault != g_lastLevelFaultState) {
-    hmiSendText(HMI_COMP_LEVEL_FAULT_TXT, fault ? (openFault ? "LEVEL OPEN FAULT" : "LEVEL FAULT") : "");
-    g_lastLevelFaultState = fault;
-  }
+  // Fault display now goes through the single shared fault field (see
+  // updateSharedFaultDisplay()) instead of writing HMI_COMP_LEVEL_FAULT_TXT
+  // directly here — that field is used only for calibration-confirmation
+  // messages now.
+  g_lastFloatOpenFault = openFault;
+  g_lastLevelFaultState = fault;
 
   if (fault) {
     if (openFault) {
@@ -424,6 +438,112 @@ static void checkAdcReferenceRails(bool force) {
 }
 
 // ---------------------------------------------------------------------------
+// Unified, blinking fault indicator (new). ONE shared HMI text field for
+// both the AIN0 angle fault and the AIN1 float fault, replacing their
+// previous separate fault-text writes. Priority: angle fault (steering)
+// over float fault when both are active. Blinks by toggling the shared
+// field's visibility with the standard `vis` instruction every
+// FAULT_BLINK_INTERVAL_MS while any fault is active.
+// ---------------------------------------------------------------------------
+static bool   g_sharedFaultActive = false;
+static String g_sharedFaultMsg = "";
+static bool   g_faultBlinkVisible = true;
+static unsigned long g_lastBlinkToggleMs = 0;
+
+static void setSharedFaultVisible(bool visible) {
+  hmiSendRaw(String("vis ") + HMI_COMP_FAULT_SHARED_TXT + "," + (visible ? "1" : "0"));
+}
+
+static void updateSharedFaultDisplay() {
+  bool anyFault = g_lastFaultState || g_lastLevelFaultState;
+  unsigned long now = millis();
+
+  const char *msg = "";
+  if (g_lastFaultState) {
+    msg = g_lastAngleOpenFault ? "ANGLE OPEN FAULT" : "ANGLE SENSOR FAULT";
+  } else if (g_lastLevelFaultState) {
+    msg = g_lastFloatOpenFault ? "LEVEL OPEN FAULT" : "LEVEL SENSOR FAULT";
+  }
+
+  if (!anyFault) {
+    if (g_sharedFaultActive) {
+      hmiSendText(HMI_COMP_FAULT_SHARED_TXT, "");
+      setSharedFaultVisible(true); // leave it visible-but-empty, not stuck hidden mid-blink
+      g_sharedFaultActive = false;
+      g_sharedFaultMsg = "";
+      g_faultBlinkVisible = true;
+    }
+    return;
+  }
+
+  // A fault is active: (re)show immediately on activation or on a message
+  // change, so switching between angle/float faults isn't delayed by the
+  // blink cadence.
+  if (!g_sharedFaultActive || g_sharedFaultMsg != msg) {
+    hmiSendText(HMI_COMP_FAULT_SHARED_TXT, msg);
+    setSharedFaultVisible(true);
+    g_faultBlinkVisible = true;
+    g_lastBlinkToggleMs = now;
+    g_sharedFaultActive = true;
+    g_sharedFaultMsg = msg;
+    return;
+  }
+
+  if (now - g_lastBlinkToggleMs >= FAULT_BLINK_INTERVAL_MS) {
+    g_lastBlinkToggleMs = now;
+    g_faultBlinkVisible = !g_faultBlinkVisible;
+    setSharedFaultVisible(g_faultBlinkVisible);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// X2 onboard buzzer: repeating FAULT_BUZZER_ON_MS-on / FAULT_BUZZER_OFF_MS-
+// off pattern while any fault is active (new). See the IMPORTANT note by
+// HMI_CMD_BUZZER_ON/OFF in Config.h — those two command strings are a
+// best-effort guess pending verification against your board's datasheet.
+// ---------------------------------------------------------------------------
+static bool g_buzzerActive = false; // whether the on/off cadence is running at all
+static bool g_buzzerOnPhase = false;
+static unsigned long g_buzzerPhaseStartMs = 0;
+
+static void setBuzzer(bool on) {
+  hmiSendRaw(on ? HMI_CMD_BUZZER_ON : HMI_CMD_BUZZER_OFF);
+}
+
+static void updateFaultBuzzer() {
+  bool anyFault = g_lastFaultState || g_lastLevelFaultState;
+  unsigned long now = millis();
+
+  if (!anyFault) {
+    if (g_buzzerActive) {
+      setBuzzer(false); // never leave the buzzer stuck on once the fault clears
+      g_buzzerActive = false;
+      g_buzzerOnPhase = false;
+    }
+    return;
+  }
+
+  if (!g_buzzerActive) {
+    g_buzzerActive = true;
+    g_buzzerOnPhase = true;
+    g_buzzerPhaseStartMs = now;
+    setBuzzer(true);
+    return;
+  }
+
+  unsigned long elapsed = now - g_buzzerPhaseStartMs;
+  if (g_buzzerOnPhase && elapsed >= FAULT_BUZZER_ON_MS) {
+    g_buzzerOnPhase = false;
+    g_buzzerPhaseStartMs = now;
+    setBuzzer(false);
+  } else if (!g_buzzerOnPhase && elapsed >= FAULT_BUZZER_OFF_MS) {
+    g_buzzerOnPhase = true;
+    g_buzzerPhaseStartMs = now;
+    setBuzzer(true);
+  }
+}
+
+// ---------------------------------------------------------------------------
 void setup() {
 #if ENABLE_SERIAL_DEBUG
   Serial.begin(SERIAL_DEBUG_BAUD);
@@ -456,4 +576,6 @@ void loop() {
   sampleFilterAndUpdate();
   sampleFloatLevelAndUpdate();
   checkAdcReferenceRails(); // self-paced; only actually samples every REFCHK_INTERVAL_MS
+  updateSharedFaultDisplay();
+  updateFaultBuzzer();
 }

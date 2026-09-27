@@ -250,6 +250,40 @@
 #define ANGLE_NOISE_FAULT_V       0.30f
 
 // ---------------------------------------------------------------------------
+// Unified fault indicator — ONE shared HMI text field for both the AIN0
+// (angle) and AIN1 (float) fault conditions above, instead of writing to
+// their own separate fault texts (t1/t3, which now carry ONLY calibration-
+// confirmation messages like "MIN SET" — unchanged, still written from the
+// doCal*/doLvl* functions). When both are active at once, the angle fault
+// (steering) takes priority for display. The AIN2/AIN3 self-check keeps its
+// own separate t4 field — it's an internal self-test, not a sensor fault in
+// the sense asked for here; say so if you'd like it folded in too.
+//
+// Blinks (via the standard `vis` show/hide instruction) while any fault is
+// active, and drives the X2's onboard buzzer in a repeating on/off pattern.
+// ---------------------------------------------------------------------------
+#define HMI_COMP_FAULT_SHARED_TXT   "t5"   // single shared fault text component
+
+#define FAULT_BLINK_INTERVAL_MS     500UL  // on/off toggle period while a fault is active
+
+#define FAULT_BUZZER_ON_MS          2000UL // 2s beep
+#define FAULT_BUZZER_OFF_MS         8000UL // 8s silence, then repeats
+
+// IMPORTANT: the exact instruction to sound/silence the X2's onboard buzzer
+// could not be confirmed from the datasheet in this environment (network
+// access to wiki.tjc1688.com is blocked here) — these are a best-effort
+// guess, NOT a verified command. TEST them first (e.g. by typing them into
+// the TJC Editor's debug/serial panel while connected to the display) before
+// relying on them. If they do nothing on your unit, see the README for a
+// guaranteed-to-work fallback: a Timer component in your TJC project whose
+// event script uses the Editor's own "Buzzer" instruction (pick it from the
+// Editor's instruction list, where it's correct for your exact firmware),
+// enabled/disabled by the firmware via the standard `tm<N>.en=` command
+// instead of these two.
+#define HMI_CMD_BUZZER_ON           "bz=1"
+#define HMI_CMD_BUZZER_OFF          "bz=0"
+
+// ---------------------------------------------------------------------------
 // Update timing / misc
 // ---------------------------------------------------------------------------
 #define SERIAL_DEBUG_BAUD      115200

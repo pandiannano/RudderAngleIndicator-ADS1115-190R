@@ -271,8 +271,8 @@ This is caught by comparing the raw AIN1 reading directly against the
 above) minus a margin (`OPEN_CIRCUIT_MARGIN_V`, default 0.15V) — not a
 hardcoded 3.3V assumption, and not `senderVolts` (which is scaled by
 `DIVIDER_RATIO_AIN1`), so this check works regardless of what that ratio is
-set to. On failure, `t3` shows `LEVEL OPEN FAULT` instead of the plain
-`LEVEL FAULT` used for an out-of-range reading.
+set to. The result feeds the shared fault indicator described below as
+`LEVEL OPEN FAULT` (vs. plain `LEVEL FAULT` for an out-of-range reading).
 
 ### AIN0 — floating input, not a pinned voltage
 
@@ -290,7 +290,9 @@ same `RAW_SAMPLES_PER_BATCH` samples already collected for the trimmed-mean
 average): a real, actively-driven, RC-filtered signal has a small
 sample-to-sample spread even while rotating; a floating input's noise
 pickup is much larger. If the spread exceeds `ANGLE_NOISE_FAULT_V` (default
-0.30V), `t1` shows `ANGLE OPEN FAULT` instead of `SENSOR FAULT`.
+0.30V), the result feeds the shared fault indicator described below as
+`ANGLE OPEN FAULT` (vs. plain `ANGLE SENSOR FAULT` for an out-of-range
+reading).
 
 **Optional hardware improvement**: add a weak pull-up (100k–470kΩ) from
 AIN0 to 3.3V. That would make an open angle-sensor wire pin high too, just
@@ -312,6 +314,63 @@ specific failure mode covered too. It doesn't affect the open-wire
 detection above, which was deliberately built to be independent of both of
 these.
 
+## Unified fault indicator (blinking text + buzzer)
+
+Implemented as `updateSharedFaultDisplay()` and `updateFaultBuzzer()` in the
+main sketch, called once per `loop()` after both sampling functions. This
+replaced the AIN0 and AIN1 fault checks' previous direct writes to their own
+separate fault-text fields with ONE shared field, per request — `t1` and
+`t3` now carry only their calibration-confirmation messages ("MIN SET",
+"SLOT 3 SET", etc.), unchanged.
+
+- **One shared text field** (`t5`, `HMI_COMP_FAULT_SHARED_TXT`) shows
+  whichever fault message applies: `ANGLE SENSOR FAULT` / `ANGLE OPEN FAULT`
+  for an AIN0 problem, or `LEVEL SENSOR FAULT` / `LEVEL OPEN FAULT` for an
+  AIN1 problem. If both are active at the same time, the angle fault wins
+  (steering takes priority over a tank/level reading); switching between
+  the two updates the text immediately rather than waiting for the next
+  blink.
+- **Blinking**: while any fault is active, `t5`'s visibility is toggled
+  with the standard `vis` instruction every `FAULT_BLINK_INTERVAL_MS`
+  (default 500 ms — 1 Hz blink). It's left visible (but empty) once the
+  fault clears, rather than possibly stuck hidden mid-blink.
+- **Buzzer**: while any fault is active, the X2's onboard buzzer is driven
+  in a repeating cycle — `FAULT_BUZZER_ON_MS` (2000 ms) on, then
+  `FAULT_BUZZER_OFF_MS` (8000 ms) off, repeating for as long as the fault
+  persists, and forced off the instant it clears.
+- The AIN2/AIN3 ADC self-check keeps its own separate `t4` field rather
+  than joining this shared one — it's an internal self-test rather than a
+  "sensor is faulty" condition in the sense this was asked for. Say so if
+  you'd like it folded in too.
+
+**Important — verify the buzzer command yourself.** The exact instruction
+to sound/silence the X2's onboard buzzer could not be confirmed from the
+datasheet in this environment (network access to the TJC wiki is blocked
+here), so `HMI_CMD_BUZZER_ON` / `HMI_CMD_BUZZER_OFF` in `Config.h`
+(currently `"bz=1"` / `"bz=0"`) are a best-effort guess, not a verified
+command — the timing logic around them is solid, but test that these two
+strings actually make your unit beep (e.g. by typing them into the TJC
+Editor's debug/serial panel while connected to the display) before relying
+on it. If they don't do anything on your firmware version, here's a
+guaranteed-to-work fallback:
+
+1. In your TJC project, add a **Timer** component (e.g. `tm0`), initially
+   disabled, with whatever period you like (its period isn't used for the
+   on/off timing — the firmware still drives that).
+2. In `tm0`'s Timer Event, add the Editor's own **Buzzer** instruction
+   (select it from the Editor's instruction list — the correct syntax for
+   your exact firmware version will be offered there, which is safer than a
+   guess made outside your toolchain).
+3. Replace the two lines in `setBuzzer()` (in the `.ino`) that send
+   `HMI_CMD_BUZZER_ON`/`OFF` with `tm0.en=1` / `tm0.en=0` instead — the
+   rest of the on/off cadence logic needs no other changes.
+
+In your TJC project, add one more component for this feature:
+
+- A **Text** component named `t5` — the single shared fault message. Give
+  it high-contrast styling (e.g. bright red/yellow text) since it's meant
+  to grab attention.
+
 ## AIN0 angle calibration
 
 A 3-point calibration (full-port / midships / full-starboard) is stored in
@@ -331,7 +390,9 @@ IDs matching `Config.h` (`HMI_BTN_CAL_MIN_ID` = 10, `_CENTER_ID` = 11,
 5. **RESET** restores the factory defaults from `Config.h`.
 
 A status/confirmation message ("MIN SET", "CAL SAVED", etc.) is written to
-the `t1` text component (`HMI_COMP_FAULT_TXT` in `Config.h`).
+the `t1` text component (`HMI_COMP_FAULT_TXT` in `Config.h`) — this field is
+used only for these calibration confirmations now; fault messages go to the
+shared `t5` field described above.
 
 **From USB serial** (115200 baud) the same actions are available for bench
 calibration without the HMI attached: type `MIN`, `CENTER`, `MAX`, `SAVE`,
@@ -356,14 +417,17 @@ In your TJC project (page 0), create:
   divide by 10 in the widget's display format for one decimal place.
 - A **Text** component named `t0` — receives the angle pre-formatted as
   text with one decimal, e.g. `"12.3"`.
-- A **Text** component named `t1` — used for fault ("SENSOR FAULT") and
-  calibration confirmation messages.
+- A **Text** component named `t1` — angle calibration confirmation messages
+  only (e.g. "MIN SET"); fault display now lives on the shared `t5` field.
 - Five buttons for calibration, IDs as listed above (optional, but
   recommended for field calibration without a laptop).
 - The `n1`/`t2`/`t3` components and four buttons for the AIN1 float-level
-  sender — see "AIN1 float-level sender" above.
+  sender — see "AIN1 float-level sender" above (`t3` likewise now carries
+  only level calibration confirmations, not fault display).
 - The `t4` component for the AIN2/AIN3 ADC self-check — see "AIN2/AIN3 ADC
   reference self-check" above.
+- The `t5` component (and, optionally, a Timer for the buzzer fallback) for
+  the shared blinking fault indicator — see "Unified fault indicator" above.
 
 Set the HMI's UART baud rate (via the TJC Editor's device settings, or a
 one-time `bauds=115200` command sent from the editor's debug/format
