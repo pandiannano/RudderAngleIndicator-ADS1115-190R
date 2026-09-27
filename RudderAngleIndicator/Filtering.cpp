@@ -28,3 +28,13 @@ float trimmedMean(const float *samples, int n, int trim) {
   }
   return used > 0 ? sum / used : sorted[count / 2];
 }
+
+float batchSpread(const float *samples, int n) {
+  if (n <= 0) return 0.0f;
+  float lo = samples[0], hi = samples[0];
+  for (int i = 1; i < n; i++) {
+    if (samples[i] < lo) lo = samples[i];
+    if (samples[i] > hi) hi = samples[i];
+  }
+  return hi - lo;
+}

@@ -83,7 +83,15 @@
 // ---------------------------------------------------------------------------
 // Plausible range of the real sender voltage (post divider-correction).
 // Anything outside this (with margin) means an open/shorted sender or wiring
-// fault rather than a real angle.
+// fault rather than a real angle. NOTE: these limits date from the original
+// 0-12V sender and were left as-is since DIVIDER_RATIO's current value
+// (whatever you've since set it to for the 0-3.3V sensor) isn't known here —
+// they will effectively never trigger at 3.3V-range signal levels unless you
+// update them to match your actual DIVIDER_RATIO-scaled voltage range. This
+// isn't a blocker for the angle sensor's open-wire case specifically (see
+// ANGLE_NOISE_FAULT_V below, which is the check that actually catches that),
+// but it does mean a hard short-to-rail on AIN0 wouldn't be caught by this
+// range check alone until updated.
 #define SENDER_V_FAULT_LOW     -0.3f
 #define SENDER_V_FAULT_HIGH    12.3f
 
@@ -120,7 +128,13 @@
 #define LEVEL_DEBOUNCE_BATCHES       3
 
 // Plausible real (post divider-correction) sender-voltage range; outside
-// this means an open/shorted float sender or wiring fault.
+// this means an open/shorted float sender or wiring fault. NOTE: same
+// caveat as SENDER_V_FAULT_HIGH above — these limits are from the original
+// 0-12V design and won't trigger at 3.3V-scale levels unless updated to
+// match your current DIVIDER_RATIO_AIN1. The open-wire case you actually
+// asked about (sender wire cut -> tap pulled to Vcc) is instead caught by
+// OPEN_CIRCUIT_MARGIN_V below, which compares the raw ADC reading directly
+// against the measured AVDD rail and so doesn't depend on this value.
 #define LEVEL_V_FAULT_LOW      -0.3f
 #define LEVEL_V_FAULT_HIGH     12.3f
 
@@ -205,6 +219,35 @@
 #define REFCHK_AVDD_TOLERANCE_V   0.15f
 
 #define HMI_COMP_REFCHK_TXT     "t4"   // ADC self-check fault/status text
+
+// ---------------------------------------------------------------------------
+// Open-wire (disconnected sender) detection — additive; does not replace or
+// touch the SENDER_V_FAULT_*/LEVEL_V_FAULT_* range checks above.
+//
+// AIN1 float sender: it's a passive divider (R1 to Vcc, the sender's own
+// resistance as R2 to GND). If the wire between the R1/R2 junction and the
+// sender is cut, R2 drops out and no current flows through R1 anymore, so
+// the tap is pulled up to essentially the supply rail. Checked against the
+// ACTUAL measured AVDD (from the AIN2/AIN3 self-check, g_lastAvddVolts in
+// the .ino) rather than a hardcoded 3.3, so it tracks the real rail and
+// doesn't depend on DIVIDER_RATIO_AIN1's value.
+#define OPEN_CIRCUIT_MARGIN_V     0.15f
+
+// AIN0 angle sensor: this is an actively-driven (ratiometric) output, not a
+// passive divider, so a cut signal wire does NOT pin the input to a rail —
+// it floats, and a floating ADC input picks up noise/crosstalk and reads
+// erratically ("oscillates") instead of settling anywhere predictable. A
+// voltage threshold can't catch that reliably (the floating reading could
+// even land inside a valid range transiently), so instead this looks at how
+// much the raw samples within one batch spread out (batchSpread() in
+// Filtering.h): a real, actively-driven, RC-filtered signal has a small
+// sample-to-sample spread even while rotating; a floating input's noise
+// pickup is much larger. Recommended hardware improvement: add a weak
+// (100k-470k) pull-up from AIN0 to 3.3V so an open wire pins high instead
+// of floating, exactly like AIN1 above — then the same simple threshold
+// approach would also apply to AIN0. This software check works either way,
+// and is what actually catches it if you don't add that resistor.
+#define ANGLE_NOISE_FAULT_V       0.30f
 
 // ---------------------------------------------------------------------------
 // Update timing / misc

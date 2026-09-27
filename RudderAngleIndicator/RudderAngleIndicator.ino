@@ -34,6 +34,17 @@
 // and flags a fault if either is out of tolerance — a simple self-test for
 // a failed ADS1115, bad I2C link, or sagging 3.3V rail. Same shared-gain
 // pattern as AIN1; does not touch the AIN0/AIN1 code either.
+//
+// Open-wire addition: AIN0 (angle sensor) and AIN1 (float sender) fail
+// differently when a wire is cut. AIN1 is a passive divider, so an open
+// sender wire pulls its tap up to the supply rail — caught by comparing the
+// raw reading to the measured AVDD (OPEN_CIRCUIT_MARGIN_V in Config.h).
+// AIN0 is an actively-driven sensor, so an open wire floats the input
+// instead of pinning it anywhere — caught instead by an abnormally large
+// spread within one batch of raw samples (ANGLE_NOISE_FAULT_V, using the
+// new batchSpread() helper in Filtering.h/.cpp). Both are additive checks
+// layered on top of the existing range-based fault checks; see the
+// Config.h comments by those two constants for the full reasoning.
 
 #include <math.h>
 #include <Wire.h>
@@ -194,10 +205,12 @@ static void pollDebugSerial() {
       }
       else if (line == "STATUS") {
         const CalPoints &p = calibration.points();
-        DBG("[STATUS] senderV=%.3f angle=%.2f cal(min=%.3f,center=%.3f,max=%.3f)\n",
-            g_lastFilteredSenderVolts, g_lastDisplayedAngle, p.vAtMin, p.vAtCenter, p.vAtMax);
-        DBG("[STATUS] levelSenderV=%.3f level=%d/%d table=[",
-            g_lastFloatSenderVolts, g_lastDisplayedLevel, FLOAT_LEVEL_COUNT - 1);
+        DBG("[STATUS] senderV=%.3f angle=%.2f fault=%s cal(min=%.3f,center=%.3f,max=%.3f)\n",
+            g_lastFilteredSenderVolts, g_lastDisplayedAngle,
+            g_lastFaultState ? "YES" : "no", p.vAtMin, p.vAtCenter, p.vAtMax);
+        DBG("[STATUS] levelSenderV=%.3f level=%d/%d fault=%s table=[",
+            g_lastFloatSenderVolts, g_lastDisplayedLevel, FLOAT_LEVEL_COUNT - 1,
+            g_lastLevelFaultState ? "YES" : "no");
         for (int i = 0; i < FLOAT_LEVEL_COUNT; i++) {
           DBG("%.2f%s", floatLevel.levelVoltage(i), (i < FLOAT_LEVEL_COUNT - 1) ? "," : "]\n");
         }
@@ -241,7 +254,15 @@ static void sampleFilterAndUpdate() {
   float adcVolts = trimmedMean(samples, RAW_SAMPLES_PER_BATCH, TRIM_COUNT);
   float senderVolts = adcVolts * DIVIDER_RATIO;
 
-  bool fault = (senderVolts < SENDER_V_FAULT_LOW) || (senderVolts > SENDER_V_FAULT_HIGH);
+  bool rangeFault = (senderVolts < SENDER_V_FAULT_LOW) || (senderVolts > SENDER_V_FAULT_HIGH);
+
+  // A cut angle-sensor wire floats the ADC input rather than pinning it to
+  // a rail (see the Config.h note by ANGLE_NOISE_FAULT_V), so it shows up
+  // as abnormally large sample-to-sample spread within this batch instead
+  // of an out-of-range voltage.
+  bool openFault = batchSpread(samples, RAW_SAMPLES_PER_BATCH) > ANGLE_NOISE_FAULT_V;
+
+  bool fault = rangeFault || openFault;
 
   float filteredSenderVolts = emaFilter.update(senderVolts);
   g_lastFilteredSenderVolts = filteredSenderVolts;
@@ -254,7 +275,7 @@ static void sampleFilterAndUpdate() {
       fabsf(smoothedAngle - g_lastDisplayedAngle) >= DISPLAY_DEADBAND_DEG;
 
   if (fault != g_lastFaultState) {
-    hmiSendText(HMI_COMP_FAULT_TXT, fault ? "SENSOR FAULT" : "");
+    hmiSendText(HMI_COMP_FAULT_TXT, fault ? (openFault ? "ANGLE OPEN FAULT" : "SENSOR FAULT") : "");
     g_lastFaultState = fault;
   }
 
@@ -272,6 +293,8 @@ static void sampleFilterAndUpdate() {
 
     DBG("[ANGLE] senderV=%.3f filtV=%.3f angle=%.2f\n",
         senderVolts, filteredSenderVolts, smoothedAngle);
+  } else if (openFault) {
+    DBG("[FAULT] angle wire open/floating (batch spread > %.2fV)\n", (float)ANGLE_NOISE_FAULT_V);
   } else if (fault) {
     DBG("[FAULT] senderV=%.3f out of plausible range\n", senderVolts);
   }
@@ -299,15 +322,29 @@ static void sampleFloatLevelAndUpdate() {
   float senderVolts = adcVolts * DIVIDER_RATIO_AIN1;
   g_lastFloatSenderVolts = senderVolts;
 
-  bool fault = (senderVolts < LEVEL_V_FAULT_LOW) || (senderVolts > LEVEL_V_FAULT_HIGH);
+  bool rangeFault = (senderVolts < LEVEL_V_FAULT_LOW) || (senderVolts > LEVEL_V_FAULT_HIGH);
+
+  // If the float sender's own wire is cut, R2 drops out of the divider and
+  // the tap is pulled up to essentially the supply rail (see Config.h note
+  // by OPEN_CIRCUIT_MARGIN_V). Compared against the raw ADC reading (not
+  // senderVolts, which is scaled by DIVIDER_RATIO_AIN1) and the actually
+  // measured AVDD, so it doesn't depend on that scale factor. Skipped until
+  // the AIN2/AIN3 self-check has produced a first reading.
+  bool openFault = !isnan(g_lastAvddVolts) && (adcVolts >= (g_lastAvddVolts - OPEN_CIRCUIT_MARGIN_V));
+
+  bool fault = rangeFault || openFault;
 
   if (fault != g_lastLevelFaultState) {
-    hmiSendText(HMI_COMP_LEVEL_FAULT_TXT, fault ? "LEVEL FAULT" : "");
+    hmiSendText(HMI_COMP_LEVEL_FAULT_TXT, fault ? (openFault ? "LEVEL OPEN FAULT" : "LEVEL FAULT") : "");
     g_lastLevelFaultState = fault;
   }
 
   if (fault) {
-    DBG("[LEVEL FAULT] senderV=%.3f out of plausible range\n", senderVolts);
+    if (openFault) {
+      DBG("[LEVEL FAULT] adcV=%.3f pinned near AVDD=%.3f (wire cut?)\n", adcVolts, g_lastAvddVolts);
+    } else {
+      DBG("[LEVEL FAULT] senderV=%.3f out of plausible range\n", senderVolts);
+    }
     return;
   }
 

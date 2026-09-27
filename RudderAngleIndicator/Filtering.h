@@ -1,8 +1,12 @@
 // Filtering.h
 // Small, dependency-free building blocks for the noise-reduction pipeline:
 //   1. trimmedMean()   - rejects impulse/spike outliers within one batch
-//   2. EmaFilter        - exponential moving average (software low-pass)
-//   3. SlewLimiter       - clamps the rate of change to a physically
+//   2. batchSpread()    - max-min within one batch; used to detect a
+//                          floating/disconnected input, which shows far
+//                          more sample-to-sample noise than a real,
+//                          actively-driven, filtered signal ever would
+//   3. EmaFilter        - exponential moving average (software low-pass)
+//   4. SlewLimiter       - clamps the rate of change to a physically
 //                          plausible value, killing anything faster than the
 //                          rudder itself could ever move
 #pragma once
@@ -13,6 +17,13 @@
 // readings. This removes single-sample spikes (contact noise on the sender
 // wiper, EMI) that a plain average would let through.
 float trimmedMean(const float *samples, int n, int trim);
+
+// Returns max(samples) - min(samples) over the batch. A cut signal wire on
+// an actively-driven (ratiometric) sensor leaves the ADC input floating
+// rather than pinned to a rail, so it can't be caught by a voltage
+// threshold; a floating input instead picks up noise/crosstalk and swings
+// far more within one batch than a real, RC-filtered signal ever does.
+float batchSpread(const float *samples, int n);
 
 class EmaFilter {
 public:

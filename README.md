@@ -3,13 +3,16 @@
 Firmware for a marine rudder angle indicator:
 
 - **Angle sensor**: a 0–360° rotary angle sensor, powered from 3.3V with a
-  0–3.3V output proportional to angle, on `AIN0`. (Originally a 0–190 Ω
-  variable resistor, then a Hall-effect sensor — the AIN0 pipeline below is
-  unchanged from that design and works the same with any of these, since
-  the 3-point calibration captures whatever real voltage range the rudder's
-  actual ±50° swing produces, out of the sensor's full 360° span.)
+  0–3.3V output proportional to angle, on `AIN0`, actually used only over a
+  135°–225° window (so its output stays well below 3.3V in normal
+  operation). (Originally a 0–190 Ω variable resistor, then a Hall-effect
+  sensor — the AIN0 pipeline below is unchanged from that design and works
+  the same with any of these, since the 3-point calibration captures
+  whatever real voltage range the rudder's actual swing produces, out of
+  the sensor's full 360° span.)
 - **Level sensor**: a second, floating (float-arm) 0–190 Ω sender with 13
-  discrete resistance steps, on `AIN1`.
+  discrete resistance steps, on `AIN1`, wired through its own voltage
+  divider (R1/R2) that keeps its normal reading in the ~1–1.5V range.
 - **ADC self-check references**: `AIN2` tied to GND, `AIN3` tied to
   AVDD/3.3V — known-good levels the firmware reads back periodically to
   verify the ADS1115 and 3.3V rail are healthy.
@@ -247,6 +250,67 @@ In your TJC project, add one more component:
 - A **Text** component named `t4` — ADC self-check fault messages. No
   calibration buttons are needed for this one, since it checks against
   fixed, known-in-advance voltages rather than anything sender-specific.
+
+## Open-wire (disconnected sender) detection
+
+AIN0 (angle sensor) and AIN1 (float sender) fail differently when a signal
+wire is cut, so each gets its own detection method, layered on top of the
+existing range-based fault checks (`SENDER_V_FAULT_*` / `LEVEL_V_FAULT_*`)
+rather than replacing them.
+
+### AIN1 — pinned to the supply rail
+
+The float sender is a passive divider: R1 to Vcc, the sender's own
+resistance as R2 to GND, tap in between goes to AIN1. If the wire between
+that tap and the sender is cut, R2 drops out of the divider — no more
+current flows through R1, so the tap is pulled up to essentially the full
+supply rail.
+
+This is caught by comparing the raw AIN1 reading directly against the
+*actual measured* AVDD (`g_lastAvddVolts`, from the AIN2/AIN3 self-check
+above) minus a margin (`OPEN_CIRCUIT_MARGIN_V`, default 0.15V) — not a
+hardcoded 3.3V assumption, and not `senderVolts` (which is scaled by
+`DIVIDER_RATIO_AIN1`), so this check works regardless of what that ratio is
+set to. On failure, `t3` shows `LEVEL OPEN FAULT` instead of the plain
+`LEVEL FAULT` used for an out-of-range reading.
+
+### AIN0 — floating input, not a pinned voltage
+
+The angle sensor is an actively-driven (ratiometric) sensor, not a passive
+divider — its own internal circuitry drives the output pin. A cut signal
+wire here does **not** pin the input to a rail; the ADC input floats, and a
+floating input picks up noise/crosstalk from neighboring multiplexed
+channels and mains hum, so it reads erratically instead of settling
+anywhere predictable. A voltage threshold can't catch this reliably — the
+floating reading could even land inside a valid angle range transiently.
+
+Instead, this is caught by watching how much the raw samples *within one
+batch* spread out (`batchSpread()` in `Filtering.h/.cpp`, computed from the
+same `RAW_SAMPLES_PER_BATCH` samples already collected for the trimmed-mean
+average): a real, actively-driven, RC-filtered signal has a small
+sample-to-sample spread even while rotating; a floating input's noise
+pickup is much larger. If the spread exceeds `ANGLE_NOISE_FAULT_V` (default
+0.30V), `t1` shows `ANGLE OPEN FAULT` instead of `SENSOR FAULT`.
+
+**Optional hardware improvement**: add a weak pull-up (100k–470kΩ) from
+AIN0 to 3.3V. That would make an open angle-sensor wire pin high too, just
+like AIN1's failure mode, and you could then rely on a simple threshold
+there as well. The software check above works either way and doesn't
+require this change, but the pull-up makes the failure mode more certain
+and easier to reason about.
+
+### A note on the existing range-based fault thresholds
+
+`SENDER_V_FAULT_HIGH` and `LEVEL_V_FAULT_HIGH` are both still `12.3` —
+sized for the original 0–12V sender design. With sensors that now output
+0–3.3V, and depending on what you've set `DIVIDER_RATIO` /
+`DIVIDER_RATIO_AIN1` to, these limits may never trigger even on a hard
+short to the rail. They were intentionally left untouched here rather than
+guessed at, since their correct value depends on those ratios; update them
+in `Config.h` to match your actual electrical range if you want that
+specific failure mode covered too. It doesn't affect the open-wire
+detection above, which was deliberately built to be independent of both of
+these.
 
 ## AIN0 angle calibration
 
