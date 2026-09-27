@@ -58,3 +58,12 @@ float Calibration::voltageToAngle(float senderVolts) const {
 
   return angle;
 }
+
+bool Calibration::isWithinCalibratedRange(float senderVolts, float marginFrac) const {
+  float lo = _points.vAtMin;
+  float hi = _points.vAtMax;
+  if (lo > hi) { float t = lo; lo = hi; hi = t; }
+
+  float margin = marginFrac * (hi - lo);
+  return senderVolts >= (lo - margin) && senderVolts <= (hi + margin);
+}

@@ -307,6 +307,26 @@ consistency, though it wasn't strictly needed there — a pinned-to-rail
 voltage stays put once the wire is cut, so it never had this problem to
 begin with.
 
+**Calibration-range check (the actual fix that made this stick).** On real
+hardware, the floating input didn't just occasionally quiet down between
+bursts — it settled *permanently*, so even the 5-batch latch above
+eventually ran out and cleared the fault for good, since `batchSpread()`
+can only ever detect a floating input while it's still noisy. The fix:
+`calRangeFault` (`Calibration::isWithinCalibratedRange()`, margin
+`CAL_RANGE_FAULT_MARGIN_FRAC` — default 0.20, i.e. 20% of your calibrated
+span as allowed overtravel) checks the reading against **your own captured
+calibration points** (`vAtMin`/`vAtMax`) instead of a fixed voltage. This
+keeps working even once the floating voltage goes fully quiet, as long as
+it settles outside your calibrated operating window — which is the expected
+case for a sensor whose full mechanical/electrical range (0–360°) is much
+wider than the narrow window you actually use (e.g. 135–225°): a floating
+CMOS input commonly settles toward a supply rail, well outside a narrow
+calibrated band. This needs no per-user tuning and works regardless of
+`DIVIDER_RATIO`, since it's expressed in the same units your calibration
+already uses. It only works once you've calibrated for your actual sensor
+(`MIN`/`CENTER`/`MAX`, saved) — with only the factory-default calibration
+points it would immediately (and correctly) call everything a fault.
+
 **Optional hardware improvement**: add a weak pull-up (100k–470kΩ) from
 AIN0 to 3.3V. That would make an open angle-sensor wire pin high too, just
 like AIN1's failure mode, and you could then rely on a simple threshold

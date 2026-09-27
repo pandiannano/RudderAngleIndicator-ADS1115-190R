@@ -63,6 +63,20 @@
 // FAULT_CLEAR_CONFIRM_BATCHES consecutive clean batches, not just one, so
 // the underlying instant test only needs to catch the problem occasionally
 // to keep the fault (and beep) going for as long as it's real.
+//
+// Root-cause fix for AIN0: on real hardware the floating input didn't just
+// occasionally go quiet between noise bursts, it settled permanently — so
+// even the latch above eventually ran out its 5-batch streak and cleared
+// the fault for good. Root cause: ANGLE_NOISE_FAULT_V can only ever detect
+// a floating input WHILE it's actively noisy, and this one stopped being
+// noisy. Fixed by adding calRangeFault (see CAL_RANGE_FAULT_MARGIN_FRAC in
+// Config.h and Calibration::isWithinCalibratedRange()): it checks the
+// reading against your own captured calibration span instead of a fixed
+// voltage, so it keeps working even once the floating voltage goes fully
+// quiet, as long as it settles outside your narrow calibrated operating
+// window — which, for a sensor whose full mechanical range is much wider
+// than what you actually use (0-360 degrees vs. a 135-225 degree operating
+// window here), is the expected case.
 
 #include <math.h>
 #include <Wire.h>
@@ -283,12 +297,21 @@ static void sampleFilterAndUpdate() {
   float adcVolts = trimmedMean(samples, RAW_SAMPLES_PER_BATCH, TRIM_COUNT);
   float senderVolts = adcVolts * DIVIDER_RATIO;
 
-  bool rangeFault = (senderVolts < SENDER_V_FAULT_LOW) || (senderVolts > SENDER_V_FAULT_HIGH);
+  // calRangeFault checks against YOUR calibrated span (135-225 degrees'
+  // worth of voltage), not the sensor's full 0-360 degree range — see the
+  // CAL_RANGE_FAULT_MARGIN_FRAC comment in Config.h. This is what makes an
+  // open wire that settles to a quiet-but-wrong voltage a PERSISTENT fault
+  // instead of a one-shot blip, since that settled voltage is very unlikely
+  // to land inside your narrow operating window.
+  bool calRangeFault = !calibration.isWithinCalibratedRange(senderVolts, CAL_RANGE_FAULT_MARGIN_FRAC);
+  bool rangeFault = calRangeFault ||
+      (senderVolts < SENDER_V_FAULT_LOW) || (senderVolts > SENDER_V_FAULT_HIGH);
 
   // A cut angle-sensor wire floats the ADC input rather than pinning it to
   // a rail (see the Config.h note by ANGLE_NOISE_FAULT_V), so it shows up
   // as abnormally large sample-to-sample spread within this batch instead
-  // of an out-of-range voltage.
+  // of an out-of-range voltage. This only catches the initial transient
+  // (see calRangeFault above for the persistent case).
   bool openFault = batchSpread(samples, RAW_SAMPLES_PER_BATCH) > ANGLE_NOISE_FAULT_V;
 
   bool instantFault = rangeFault || openFault;
@@ -344,7 +367,8 @@ static void sampleFilterAndUpdate() {
     DBG("[FAULT] angle wire open/floating (batch spread > %.2fV, latched %d/%d)\n",
         (float)ANGLE_NOISE_FAULT_V, g_angleFaultClearStreak, FAULT_CLEAR_CONFIRM_BATCHES);
   } else if (fault) {
-    DBG("[FAULT] senderV=%.3f out of plausible range\n", senderVolts);
+    DBG("[FAULT] senderV=%.3f out of plausible range (cal=%d abs=%d)\n",
+        senderVolts, calRangeFault, rangeFault && !calRangeFault);
   }
 }
 

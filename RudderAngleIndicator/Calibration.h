@@ -32,6 +32,19 @@ public:
   // clamped to [ANGLE_MIN_DEG, ANGLE_MAX_DEG].
   float voltageToAngle(float senderVolts) const;
 
+  // True if senderVolts falls within [min(vAtMin,vAtMax), max(vAtMin,vAtMax)]
+  // plus a margin of marginFrac * that span on each end. Since it's derived
+  // from your own captured calibration points rather than a fixed constant,
+  // this works regardless of DIVIDER_RATIO or the sensor's absolute voltage
+  // range — any real, in-range reading should always fall inside the
+  // calibrated end-to-end span (plus a little overtravel allowance), so
+  // anything outside it is implausible. Used as a fault check for a sensor
+  // whose electrical range only covers a subset of the sensor's full travel
+  // (e.g. a 360-degree sensor used over a much narrower operating window),
+  // where a stuck/floating reading is likely to settle outside that narrow
+  // window even though it's still well within the sensor's absolute limits.
+  bool isWithinCalibratedRange(float senderVolts, float marginFrac) const;
+
 private:
   Preferences _prefs;
   CalPoints _points;

@@ -95,6 +95,28 @@
 #define SENDER_V_FAULT_LOW     -0.3f
 #define SENDER_V_FAULT_HIGH    12.3f
 
+// Root-cause fix for the angle sensor's open-wire fault going quiet after
+// one beep: ANGLE_NOISE_FAULT_V only catches noise WHILE the floating input
+// is actively bouncing around, but on real hardware a floating input can
+// settle to a quiet, stable-but-wrong voltage within a second or so, after
+// which that check stops tripping even though the wire is still cut — the
+// latch (FAULT_CLEAR_CONFIRM_BATCHES) only delays that false-clear, it
+// can't prevent it if the underlying signal genuinely goes quiet for good.
+//
+// This margin instead checks the reading against your OWN captured
+// calibration span (Calibration::isWithinCalibratedRange(), using
+// calibration.points()' vAtMin/vAtMax) rather than a fixed voltage — so it
+// needs no per-user tuning and works regardless of DIVIDER_RATIO. It's
+// aimed at sensors like this one, where the sensor's full mechanical/
+// electrical range (0-360 degrees here) is much wider than the narrow
+// operating window that's actually calibrated (135-225 degrees here): a
+// wire that settles anywhere outside that calibrated window — which is
+// likely, since floating CMOS inputs commonly settle toward a supply rail —
+// is caught persistently (not just transiently), same as AIN1's pinned-to-
+// rail check. 0.20 = allow 20% of the calibrated span as legitimate
+// overtravel past each end before calling it a fault.
+#define CAL_RANGE_FAULT_MARGIN_FRAC  0.20f
+
 // ---------------------------------------------------------------------------
 // Floating (float-type) level sender on AIN1 — added alongside the existing
 // AIN0 angle channel. Unlike the AIN0 sender, this one does not move
