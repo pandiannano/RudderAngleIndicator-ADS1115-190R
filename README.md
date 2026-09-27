@@ -294,6 +294,19 @@ pickup is much larger. If the spread exceeds `ANGLE_NOISE_FAULT_V` (default
 `ANGLE OPEN FAULT` (vs. plain `ANGLE SENSOR FAULT` for an out-of-range
 reading).
 
+**Latched, not instantaneous.** A floating input often bursts with noise
+right when the wire is cut, then settles toward some quiet-but-still-wrong
+voltage as its parasitic capacitance charges up — at which point a
+single-batch spread check can stop tripping even though the sensor is still
+disconnected, which showed up as the fault (and its buzzer) clearing itself
+after one beep. To fix that, the fault is now **latched**: once triggered,
+it only clears after `FAULT_CLEAR_CONFIRM_BATCHES` (default 5) consecutive
+clean-looking batches, not just one (fast-trip, slow-reset — a standard
+pattern for alarms). The same latch is applied to AIN1's fault too, for
+consistency, though it wasn't strictly needed there — a pinned-to-rail
+voltage stays put once the wire is cut, so it never had this problem to
+begin with.
+
 **Optional hardware improvement**: add a weak pull-up (100k–470kΩ) from
 AIN0 to 3.3V. That would make an open angle-sensor wire pin high too, just
 like AIN1's failure mode, and you could then rely on a simple threshold

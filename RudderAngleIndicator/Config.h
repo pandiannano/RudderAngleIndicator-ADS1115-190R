@@ -249,6 +249,19 @@
 // and is what actually catches it if you don't add that resistor.
 #define ANGLE_NOISE_FAULT_V       0.30f
 
+// A floating ADC input often bursts with noise right when it's disconnected
+// but then settles toward some quiet, stable-but-meaningless voltage as its
+// parasitic capacitance charges up — at which point a single-batch spread
+// check like ANGLE_NOISE_FAULT_V can stop tripping even though the wire is
+// still cut. To avoid the fault (and its buzzer) silently going quiet in
+// that case, an active fault is only cleared after this many CONSECUTIVE
+// clean batches — a single good-looking reading is not enough (fast-trip,
+// slow-reset). Applied to both AIN0 and AIN1's fault flags for consistency,
+// though AIN1's pinned-to-rail open fault doesn't strictly need it (that
+// voltage stays put once the wire is cut, so it never needed latching to
+// begin with).
+#define FAULT_CLEAR_CONFIRM_BATCHES  5
+
 // ---------------------------------------------------------------------------
 // Unified fault indicator — ONE shared HMI text field for both the AIN0
 // (angle) and AIN1 (float) fault conditions above, instead of writing to

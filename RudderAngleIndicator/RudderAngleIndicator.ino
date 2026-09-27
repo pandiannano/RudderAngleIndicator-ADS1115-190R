@@ -53,6 +53,16 @@
 // repeating on/off pattern while any fault is active (updateFaultBuzzer())
 // — see the Config.h comments by HMI_COMP_FAULT_SHARED_TXT and
 // FAULT_BUZZER_ON_MS/OFF_MS.
+//
+// Fault latch fix: AIN0's open-wire check (a noise-spread test) only fires
+// while the floating input is actively noisy, and a floating input often
+// quiets down on its own a second or two after the wire is cut — which was
+// making the fault (and its buzzer) clear itself after one beep even
+// though the sensor was still disconnected. Both AIN0 and AIN1's fault
+// flags are now latched: an active fault only clears after
+// FAULT_CLEAR_CONFIRM_BATCHES consecutive clean batches, not just one, so
+// the underlying instant test only needs to catch the problem occasionally
+// to keep the fault (and beep) going for as long as it's real.
 
 #include <math.h>
 #include <Wire.h>
@@ -87,6 +97,14 @@ static void  checkAdcReferenceRails(bool force = false); // defined below; used 
 
 static bool g_lastAngleOpenFault = false; // set by sampleFilterAndUpdate(), read by updateSharedFaultDisplay()
 static bool g_lastFloatOpenFault = false; // set by sampleFloatLevelAndUpdate(), read by updateSharedFaultDisplay()
+
+// Fault latches (fast-trip, slow-reset — see FAULT_CLEAR_CONFIRM_BATCHES in
+// Config.h): each starts "at" its own confirm count so a clean reading at
+// boot doesn't report a phantom fault.
+static int  g_angleFaultClearStreak = FAULT_CLEAR_CONFIRM_BATCHES;
+static int  g_levelFaultClearStreak = FAULT_CLEAR_CONFIRM_BATCHES;
+static bool g_angleFaultWasOpen = false; // which reason last (re)triggered the latch
+static bool g_levelFaultWasOpen = false;
 
 // ---------------------------------------------------------------------------
 // Debug helper
@@ -273,7 +291,21 @@ static void sampleFilterAndUpdate() {
   // of an out-of-range voltage.
   bool openFault = batchSpread(samples, RAW_SAMPLES_PER_BATCH) > ANGLE_NOISE_FAULT_V;
 
-  bool fault = rangeFault || openFault;
+  bool instantFault = rangeFault || openFault;
+
+  // Latch: a floating input often bursts with noise right when it's cut,
+  // then settles toward a quiet-but-still-wrong voltage, which would
+  // otherwise make openFault flicker off after one clean-looking batch
+  // even though the wire is still disconnected. Require several
+  // consecutive clean batches before actually clearing the fault (and, in
+  // turn, the buzzer/blink it drives) — see FAULT_CLEAR_CONFIRM_BATCHES.
+  if (instantFault) {
+    g_angleFaultClearStreak = 0;
+    g_angleFaultWasOpen = openFault; // record the reason while it's actually happening
+  } else if (g_angleFaultClearStreak < FAULT_CLEAR_CONFIRM_BATCHES) {
+    g_angleFaultClearStreak++;
+  }
+  bool fault = g_angleFaultClearStreak < FAULT_CLEAR_CONFIRM_BATCHES;
 
   float filteredSenderVolts = emaFilter.update(senderVolts);
   g_lastFilteredSenderVolts = filteredSenderVolts;
@@ -288,8 +320,10 @@ static void sampleFilterAndUpdate() {
   // Fault display now goes through the single shared fault field (see
   // updateSharedFaultDisplay(), called once per loop() after both sampling
   // functions) instead of writing HMI_COMP_FAULT_TXT directly here — that
-  // field is used only for calibration-confirmation messages now.
-  g_lastAngleOpenFault = openFault;
+  // field is used only for calibration-confirmation messages now. Uses the
+  // latched reason (g_angleFaultWasOpen), not the instantaneous openFault,
+  // so the message stays correct throughout the latch period too.
+  g_lastAngleOpenFault = g_angleFaultWasOpen;
   g_lastFaultState = fault;
 
   if (!fault && angleChangedEnough) {
@@ -306,8 +340,9 @@ static void sampleFilterAndUpdate() {
 
     DBG("[ANGLE] senderV=%.3f filtV=%.3f angle=%.2f\n",
         senderVolts, filteredSenderVolts, smoothedAngle);
-  } else if (openFault) {
-    DBG("[FAULT] angle wire open/floating (batch spread > %.2fV)\n", (float)ANGLE_NOISE_FAULT_V);
+  } else if (g_angleFaultWasOpen) {
+    DBG("[FAULT] angle wire open/floating (batch spread > %.2fV, latched %d/%d)\n",
+        (float)ANGLE_NOISE_FAULT_V, g_angleFaultClearStreak, FAULT_CLEAR_CONFIRM_BATCHES);
   } else if (fault) {
     DBG("[FAULT] senderV=%.3f out of plausible range\n", senderVolts);
   }
@@ -345,18 +380,31 @@ static void sampleFloatLevelAndUpdate() {
   // the AIN2/AIN3 self-check has produced a first reading.
   bool openFault = !isnan(g_lastAvddVolts) && (adcVolts >= (g_lastAvddVolts - OPEN_CIRCUIT_MARGIN_V));
 
-  bool fault = rangeFault || openFault;
+  bool instantFault = rangeFault || openFault;
+
+  // Same latch as the angle channel (see FAULT_CLEAR_CONFIRM_BATCHES in
+  // Config.h) — this pinned-to-rail check doesn't strictly need it since
+  // the voltage stays put once the wire is cut, but it's applied here too
+  // for consistency and as cheap insurance against any single-batch blip.
+  if (instantFault) {
+    g_levelFaultClearStreak = 0;
+    g_levelFaultWasOpen = openFault;
+  } else if (g_levelFaultClearStreak < FAULT_CLEAR_CONFIRM_BATCHES) {
+    g_levelFaultClearStreak++;
+  }
+  bool fault = g_levelFaultClearStreak < FAULT_CLEAR_CONFIRM_BATCHES;
 
   // Fault display now goes through the single shared fault field (see
   // updateSharedFaultDisplay()) instead of writing HMI_COMP_LEVEL_FAULT_TXT
   // directly here — that field is used only for calibration-confirmation
   // messages now.
-  g_lastFloatOpenFault = openFault;
+  g_lastFloatOpenFault = g_levelFaultWasOpen;
   g_lastLevelFaultState = fault;
 
   if (fault) {
-    if (openFault) {
-      DBG("[LEVEL FAULT] adcV=%.3f pinned near AVDD=%.3f (wire cut?)\n", adcVolts, g_lastAvddVolts);
+    if (g_levelFaultWasOpen) {
+      DBG("[LEVEL FAULT] adcV=%.3f pinned near AVDD=%.3f (wire cut?, latched %d/%d)\n",
+          adcVolts, g_lastAvddVolts, g_levelFaultClearStreak, FAULT_CLEAR_CONFIRM_BATCHES);
     } else {
       DBG("[LEVEL FAULT] senderV=%.3f out of plausible range\n", senderVolts);
     }
