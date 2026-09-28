@@ -324,6 +324,19 @@
 // don't support this instruction at all.
 
 // ---------------------------------------------------------------------------
+// HMI boot-splash workaround: the ESP32 starts sending display updates
+// almost immediately, but the TJC screen spends its first few seconds on
+// its own loading animation and isn't listening yet — so those early
+// updates are missed. Since values are normally only re-sent when they
+// change, a sensor that stays put after that window never gets displayed
+// until it moves. Fixed by forcing a few "resend everything" refreshes
+// during the first several seconds after boot, timed to land after the
+// splash screen — see the g_bootRefresh logic in the .ino.
+// ---------------------------------------------------------------------------
+#define HMI_BOOT_REFRESH_COUNT         3      // how many forced refreshes
+#define HMI_BOOT_REFRESH_INTERVAL_MS   2000UL // spacing between them (2s,4s,6s)
+
+// ---------------------------------------------------------------------------
 // Update timing / misc
 // ---------------------------------------------------------------------------
 #define SERIAL_DEBUG_BAUD      115200

@@ -624,6 +624,31 @@ static void updateFaultBuzzer() {
 }
 
 // ---------------------------------------------------------------------------
+// HMI boot-splash workaround (new). The TJC screen's own loading animation
+// takes a few seconds, during which it isn't listening yet, so whatever the
+// ESP32 sends in that window is lost; a sensor that doesn't change after
+// that is never resent and stays at the HMI's design-time default. Fixes
+// this by forcing HMI_BOOT_REFRESH_COUNT "resend everything" refreshes
+// during the first several seconds, regardless of whether the sensor
+// actually changed — resetting these tracking variables is enough, since
+// the existing update functions already treat "no previous value" as
+// "changed" (that's how they behave on the very first real reading too).
+// ---------------------------------------------------------------------------
+static int           g_bootRefreshesDone = 0;
+static unsigned long g_lastBootRefreshMs = 0;
+
+static void refreshHmiIfBooting() {
+  if (g_bootRefreshesDone >= HMI_BOOT_REFRESH_COUNT) return;
+  if (millis() - g_lastBootRefreshMs < HMI_BOOT_REFRESH_INTERVAL_MS) return;
+
+  g_lastBootRefreshMs = millis();
+  g_bootRefreshesDone++;
+  g_lastDisplayedAngle = NAN;
+  g_lastDisplayedLevel = -1;
+  DBG("[INIT] HMI boot refresh %d/%d\n", g_bootRefreshesDone, HMI_BOOT_REFRESH_COUNT);
+}
+
+// ---------------------------------------------------------------------------
 void setup() {
 #if ENABLE_SERIAL_DEBUG
   Serial.begin(SERIAL_DEBUG_BAUD);
@@ -653,6 +678,7 @@ void setup() {
 void loop() {
   hmiPoll();
   pollDebugSerial();
+  refreshHmiIfBooting();
   sampleFilterAndUpdate();
 #if ACTIVE_BUILD_OPTION == BUILD_OPTION_ANGLE_AND_LEVEL
   sampleFloatLevelAndUpdate();
