@@ -37,10 +37,11 @@
 //
 // Open-wire addition: AIN0 (angle sensor) and AIN1 (float sender) fail
 // differently when a wire is cut. AIN1 is a passive divider, so an open
-// sender wire pulls its tap up to the supply rail — caught by comparing the
-// raw reading to the measured AVDD (OPEN_CIRCUIT_MARGIN_V in Config.h).
-// AIN0 is an actively-driven sensor, so an open wire floats the input
-// instead of pinning it anywhere — caught instead by an abnormally large
+// sender wire pulls its tap up to the supply rail — caught by checking the
+// raw reading against this channel's own PGA ceiling, since it saturates
+// there instead of reading the true rail voltage (LEVEL_SATURATION_FAULT_V
+// in Config.h). AIN0 is an actively-driven sensor, so an open wire floats
+// the input instead of pinning it anywhere — caught instead by an abnormally large
 // spread within one batch of raw samples (ANGLE_NOISE_FAULT_V, using the
 // new batchSpread() helper in Filtering.h/.cpp). Both are additive checks
 // layered on top of the existing range-based fault checks; see the
@@ -81,6 +82,16 @@
 // Build option: ACTIVE_BUILD_OPTION in Config.h selects, at compile time,
 // whether this build is angle-only or angle+level — see loop() below,
 // where sampleFloatLevelAndUpdate() is the only thing gated on it.
+//
+// AIN1 PGA range change: ADS1115_GAIN_AIN1 dropped from GAIN_ONE (+-4.096V)
+// to GAIN_TWO (+-2.048V) for better resolution on this sender's real ~0-1V
+// signal — safe regardless of PGA setting, since the ADS1115's absolute max
+// input rating is set by its own VDD pin, not by the PGA. The one knock-on
+// change this required: the AIN1 open-wire check no longer compares against
+// the measured AVDD (the ADC can't read that high at this gain anymore — it
+// saturates instead), so it now checks for that saturation directly
+// (LEVEL_SATURATION_FAULT_V in Config.h). See the long comment by
+// ADS1115_GAIN_AIN1 in Config.h for the full reasoning.
 
 #include <math.h>
 #include <Wire.h>
@@ -410,12 +421,14 @@ static void sampleFloatLevelAndUpdate() {
   bool rangeFault = (senderVolts < LEVEL_V_FAULT_LOW) || (senderVolts > LEVEL_V_FAULT_HIGH);
 
   // If the float sender's own wire is cut, R2 drops out of the divider and
-  // the tap is pulled up to essentially the supply rail (see Config.h note
-  // by OPEN_CIRCUIT_MARGIN_V). Compared against the raw ADC reading (not
-  // senderVolts, which is scaled by DIVIDER_RATIO_AIN1) and the actually
-  // measured AVDD, so it doesn't depend on that scale factor. Skipped until
-  // the AIN2/AIN3 self-check has produced a first reading.
-  bool openFault = !isnan(g_lastAvddVolts) && (adcVolts >= (g_lastAvddVolts - OPEN_CIRCUIT_MARGIN_V));
+  // the tap is pulled up to essentially the supply rail (~3.3V) — well
+  // above AIN1_FULLSCALE_V (2.048V), so the ADC just saturates instead of
+  // reading the true voltage. Checked directly against the raw ADC reading
+  // (not senderVolts, which is scaled by DIVIDER_RATIO_AIN1) and this
+  // channel's own PGA ceiling (see Config.h note by LEVEL_SATURATION_FAULT_V)
+  // rather than the measured AVDD, since the ADC can no longer actually
+  // reach AVDD at this gain.
+  bool openFault = adcVolts >= LEVEL_SATURATION_FAULT_V;
 
   bool instantFault = rangeFault || openFault;
 
@@ -440,8 +453,8 @@ static void sampleFloatLevelAndUpdate() {
 
   if (fault) {
     if (g_levelFaultWasOpen) {
-      DBG("[LEVEL FAULT] adcV=%.3f pinned near AVDD=%.3f (wire cut?, latched %d/%d)\n",
-          adcVolts, g_lastAvddVolts, g_levelFaultClearStreak, FAULT_CLEAR_CONFIRM_BATCHES);
+      DBG("[LEVEL FAULT] adcV=%.3f saturated at +-%.3fV PGA range (wire cut?, latched %d/%d)\n",
+          adcVolts, (float)AIN1_FULLSCALE_V, g_levelFaultClearStreak, FAULT_CLEAR_CONFIRM_BATCHES);
     } else {
       DBG("[LEVEL FAULT] senderV=%.3f out of plausible range\n", senderVolts);
     }

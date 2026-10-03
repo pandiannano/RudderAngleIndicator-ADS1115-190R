@@ -173,6 +173,31 @@ continuously — so it's decoded differently from the angle channel:
 The displayed value is a 0–100% level (level 0 = 0%, level 12 = 100%,
 evenly spaced) sent to `n1.val` and `t2.txt`.
 
+### AIN1 PGA range — ±2.048V instead of ±4.096V
+
+`ADS1115_GAIN_AIN1` is set to `GAIN_TWO` (±2.048V full scale,
+`AIN1_FULLSCALE_V` in `Config.h`), not `GAIN_ONE` (±4.096V) like AIN0. This
+sender's real signal only reaches about 0.9–1V, so the wider ±4.096V window
+was leaving more than half the ADC's 16-bit range unused for voltage this
+sensor never produces. Halving the full-scale range roughly doubles the
+counts-per-volt (and so the resolution and effective noise floor) for that
+same signal — a free accuracy improvement, since the PGA setting only
+controls how finely the ADC digitizes whatever voltage is already on the
+pin, nothing about what the pin is allowed to see.
+
+**Is a higher voltage on that pin now dangerous?** No. The ADS1115's
+absolute maximum input rating for any `AIN` pin is `VDD-0.3V` to `VDD+0.3V`
+— set entirely by its own supply pin, never by the PGA/full-scale setting.
+With the ADS1115 powered from the same 3.3V rail as `AVDD` (as this design
+already requires — see the AIN2/AIN3 self-check below), a 3.3V pin voltage
+is within `VDD+0.3V` = 3.6V and is electrically safe at *any* gain setting,
+including this one. What changes is that 3.3V now exceeds the configured
+±2.048V measurement window, so the ADC reading simply **saturates** at its
+max code (reads ~2.048V, not the true 3.3V) instead of digitizing it
+accurately — which the open-wire check below uses directly, instead of
+comparing to the measured `AVDD` the way it used to (the ADC can no longer
+actually read that high at this gain).
+
 ### Calibrating the 13 levels
 
 The factory defaults are just evenly-spaced placeholders — real voltages
@@ -266,13 +291,18 @@ that tap and the sender is cut, R2 drops out of the divider — no more
 current flows through R1, so the tap is pulled up to essentially the full
 supply rail.
 
-This is caught by comparing the raw AIN1 reading directly against the
-*actual measured* AVDD (`g_lastAvddVolts`, from the AIN2/AIN3 self-check
-above) minus a margin (`OPEN_CIRCUIT_MARGIN_V`, default 0.15V) — not a
-hardcoded 3.3V assumption, and not `senderVolts` (which is scaled by
-`DIVIDER_RATIO_AIN1`), so this check works regardless of what that ratio is
-set to. The result feeds the shared fault indicator described below as
-`LEVEL OPEN FAULT` (vs. plain `LEVEL FAULT` for an out-of-range reading).
+AIN1 runs at `GAIN_TWO` (±2.048V full scale — see "AIN1 PGA range" above for
+why), so the ADC can no longer actually read all the way up to that ~3.3V
+pinned voltage; a pin voltage above `AIN1_FULLSCALE_V` just saturates the
+conversion at its max code instead. This is checked for directly: any raw
+AIN1 reading at or above `LEVEL_SATURATION_FAULT_V` (default 1.8V — chosen
+with margin between the sender's real ~1V max and the 2.048V PGA ceiling)
+means the real voltage is at or beyond what this channel can represent,
+which the sender's legitimate signal never approaches. Checked against the
+raw reading, not `senderVolts` (which is scaled by `DIVIDER_RATIO_AIN1`),
+so it works regardless of what that ratio is set to. The result feeds the
+shared fault indicator described below as `LEVEL OPEN FAULT` (vs. plain
+`LEVEL FAULT` for an out-of-range reading).
 
 ### AIN0 — floating input, not a pinned voltage
 

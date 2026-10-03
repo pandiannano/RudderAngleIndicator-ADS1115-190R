@@ -144,7 +144,29 @@
 // before sampling it. Default assumes the same style of external divider
 // (see DIVIDER_RATIO above) is used for this sender too; change if the
 // float sender's divider/supply produces a different voltage swing.
-#define ADS1115_GAIN_AIN1       GAIN_ONE
+//
+// GAIN_TWO (+-2.048V full scale) instead of GAIN_ONE: this sender's real
+// signal only reaches about 0.9-1V, so GAIN_ONE's 4.096V window was wasting
+// more than half the ADC's 16-bit range on voltage this sensor never
+// produces. GAIN_TWO roughly doubles the counts-per-volt for that same
+// 0-1V signal, directly improving resolution and the effective noise floor
+// — the PGA setting only changes how finely the ADC digitizes whatever
+// voltage is already present, never what the pin is allowed to see.
+//
+// Safety note: this does NOT make a higher voltage (e.g. the ~3.3V the
+// open-wire fault below is built around) dangerous to the chip. The
+// ADS1115's absolute maximum input rating for any AIN pin is VDD-0.3V to
+// VDD+0.3V, set entirely by its own supply pin (VDD) — not by the PGA/FSR
+// setting. With the ADS1115 powered from the same 3.3V rail as AVDD (as
+// this design requires — see the AIN2/AIN3 self-check section), 3.3V on a
+// pin is within VDD+0.3V = 3.6V and is electrically safe on ANY gain
+// setting. What DOES change is that 3.3V now exceeds the configured
+// +-2.048V measurement window, so the ADC reading simply saturates
+// (pins at its max code, reading ~2.048V) instead of accurately reporting
+// 3.3V — which is exactly what LEVEL_SATURATION_FAULT_V below uses to
+// detect it.
+#define ADS1115_GAIN_AIN1       GAIN_TWO
+#define AIN1_FULLSCALE_V        2.048f  // must match ADS1115_GAIN_AIN1's range
 #define DIVIDER_RATIO_AIN1      3.0f   // (R_TOP + R_BOTTOM) / R_BOTTOM, AIN1 divider
 
 #define FLOAT_LEVEL_COUNT       13     // number of discrete float positions
@@ -166,8 +188,8 @@
 // 0-12V design and won't trigger at 3.3V-scale levels unless updated to
 // match your current DIVIDER_RATIO_AIN1. The open-wire case you actually
 // asked about (sender wire cut -> tap pulled to Vcc) is instead caught by
-// OPEN_CIRCUIT_MARGIN_V below, which compares the raw ADC reading directly
-// against the measured AVDD rail and so doesn't depend on this value.
+// LEVEL_SATURATION_FAULT_V below, which checks the raw ADC reading against
+// this channel's own PGA ceiling and so doesn't depend on this value.
 #define LEVEL_V_FAULT_LOW      -0.3f
 #define LEVEL_V_FAULT_HIGH     12.3f
 
@@ -260,11 +282,21 @@
 // AIN1 float sender: it's a passive divider (R1 to Vcc, the sender's own
 // resistance as R2 to GND). If the wire between the R1/R2 junction and the
 // sender is cut, R2 drops out and no current flows through R1 anymore, so
-// the tap is pulled up to essentially the supply rail. Checked against the
-// ACTUAL measured AVDD (from the AIN2/AIN3 self-check, g_lastAvddVolts in
-// the .ino) rather than a hardcoded 3.3, so it tracks the real rail and
-// doesn't depend on DIVIDER_RATIO_AIN1's value.
-#define OPEN_CIRCUIT_MARGIN_V     0.15f
+// the tap is pulled up to essentially the supply rail (~3.3V).
+//
+// With ADS1115_GAIN_AIN1 now set to GAIN_TWO (+-2.048V) for better
+// resolution on this sender's real ~0-1V signal, the ADC can no longer
+// accurately read all the way up to 3.3V — a pin voltage above
+// AIN1_FULLSCALE_V just saturates the conversion at its max code instead
+// (reads ~2.048V, not the true voltage). Rather than fight that, this uses
+// it directly: any reading at or above LEVEL_SATURATION_FAULT_V means the
+// real voltage is at or beyond this channel's PGA ceiling, which the
+// sender's legitimate signal never approaches — so it's as reliable a
+// "wire cut" signal as comparing to AVDD was before, and simpler (no
+// dependency on the AIN2/AIN3 self-check having produced a reading yet).
+// Chosen partway between the sender's real max (~1V) and AIN1_FULLSCALE_V
+// (2.048V) for margin on both sides.
+#define LEVEL_SATURATION_FAULT_V  1.8f
 
 // AIN0 angle sensor: this is an actively-driven (ratiometric) output, not a
 // passive divider, so a cut signal wire does NOT pin the input to a rail —
