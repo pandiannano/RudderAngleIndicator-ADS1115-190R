@@ -176,19 +176,19 @@ evenly spaced) sent to `n1.val` and `t2.txt`.
 ### The sender circuit, and accurate factory defaults
 
 The actual sender circuit: `R1` = 510Ω fixed, from 3.3V to the tap; `R2` =
-0–180Ω, the sender itself, from the tap to GND. The tap (`V1`) goes
+0–190Ω, the sender itself, from the tap to GND. The tap (`V1`) goes
 straight into AIN1 — no further external divider — so `DIVIDER_RATIO_AIN1`
 is `1.0` (AIN1 reads `V1` directly) rather than the generic placeholder
 used before this was known.
 
 Because `V1 = 3.3 × R2/(R1+R2)` isn't linear in `R2`, 13 *equally spaced
-resistance* steps (0, 15, 30, … 180Ω) don't land on 13 equally spaced
+resistance* steps (0, 15.83, 31.67, … 190Ω) don't land on 13 equally spaced
 voltages. `DEFAULT_LEVEL_VOLTAGES` in `Config.h` hardcodes the actual
-computed voltage at each of those 13 steps (0.0000V up to 0.8609V at full),
+computed voltage at each of those 13 steps (0.0000V up to 0.8957V at full),
 so a freshly-flashed board already reads sensibly accurately without
 calibrating first — useful when you're programming several boards and
 don't want to re-run the full `LVL0`..`LVL12` procedure on each one. If
-your sender's real resistor values differ from 510Ω/0–180Ω, redo this
+your sender's real resistor values differ from 510Ω/0–190Ω, redo this
 same formula with your own numbers and replace the table.
 
 This only changes the *factory starting point* — calibration is unchanged
@@ -231,7 +231,7 @@ actually read that high at this gain).
 ### Calibrating the 13 levels
 
 The factory defaults (`DEFAULT_LEVEL_VOLTAGES` in `Config.h`) are now
-computed from the actual 510Ω/0–180Ω sender circuit — see above — so a
+computed from the actual 510Ω/0–190Ω sender circuit — see above — so a
 fresh board should already read sensibly without calibrating first. For
 best accuracy, or if your sender's real resistor values differ, calibrate
 against the real, physical sender anyway:

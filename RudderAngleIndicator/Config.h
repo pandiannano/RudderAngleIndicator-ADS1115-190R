@@ -131,7 +131,7 @@
 // ---------------------------------------------------------------------------
 // Floating (float-type) level sender on AIN1 — added alongside the existing
 // AIN0 angle channel. Unlike the AIN0 sender, this one does not move
-// continuously: it is a 0-180 ohm sender (hydraulic oil level) operated by
+// continuously: it is a 0-190 ohm sender (hydraulic oil level) operated by
 // a float arm that only ever rests at FLOAT_LEVEL_COUNT (13) discrete
 // resistance steps, so it is decoded as a nearest-match against a
 // calibrated table of 13 voltages rather than an interpolated curve.
@@ -170,7 +170,7 @@
 #define AIN1_FULLSCALE_V        2.048f  // must match ADS1115_GAIN_AIN1's range
 
 // Real sender circuit (now known): R1 = 510 ohm fixed, from 3.3V to the tap;
-// R2 = 0-180 ohm, the sender itself, from the tap to GND. The tap (V1) goes
+// R2 = 0-190 ohm, the sender itself, from the tap to GND. The tap (V1) goes
 // straight into AIN1 with no further external divider, so AIN1 reads V1
 // directly and DIVIDER_RATIO_AIN1 is 1.0 — "senderVolts" below IS V1, not a
 // scaled-up version of it. (If you ever add an external divider after the
@@ -202,29 +202,29 @@
 #define LEVEL_V_FAULT_HIGH     12.3f
 
 // Factory-default voltage for each of the 13 float positions — computed
-// from the actual sender circuit (R1 = 510 ohm fixed to 3.3V, R2 = 0-180
+// from the actual sender circuit (R1 = 510 ohm fixed to 3.3V, R2 = 0-190
 // ohm the sender itself to GND, V1 = the R1/R2 tap straight into AIN1 per
 // DIVIDER_RATIO_AIN1 above) rather than guessed: V1 = 3.3 * R2/(510+R2),
-// evaluated at 13 EQUALLY SPACED RESISTANCE steps (0, 15, 30, ... 180 ohm —
-// V1 is NOT linear in R2, so these are not equally spaced in volts):
+// evaluated at 13 EQUALLY SPACED RESISTANCE steps (0, 15.83, 31.67, ... 190
+// ohm — V1 is NOT linear in R2, so these are not equally spaced in volts):
 //
 //   step   R2(ohm)   V1(V)
-//     0        0     0.0000
-//     1       15     0.0943
-//     2       30     0.1833
-//     3       45     0.2676
-//     4       60     0.3474
-//     5       75     0.4231
-//     6       90     0.4950
-//     7      105     0.5634
-//     8      120     0.6286
-//     9      135     0.6907
-//    10      150     0.7500
-//    11      165     0.8067
-//    12      180     0.8609
+//     0      0.00     0.0000
+//     1     15.83     0.0994
+//     2     31.67     0.1929
+//     3     47.50     0.2812
+//     4     63.33     0.3645
+//     5     79.17     0.4434
+//     6     95.00     0.5182
+//     7    110.83     0.5891
+//     8    126.67     0.6565
+//     9    142.50     0.7207
+//    10    158.33     0.7818
+//    11    174.17     0.8401
+//    12    190.00     0.8957
 //
 // These are accurate enough to use a freshly-flashed board without
-// calibrating first, as long as its sender actually is a 510/0-180 ohm
+// calibrating first, as long as its sender actually is a 510/0-190 ohm
 // pair with 13 equally-spaced resistance steps. If your sender's resistor
 // values differ, re-run this same formula with your own R1/R2 — or just
 // calibrate as before: LVL0..LVL12 (serial) or the HMI capture button
