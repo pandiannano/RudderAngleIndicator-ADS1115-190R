@@ -3,9 +3,16 @@
 
 static const char *NVS_NAMESPACE = "floatlvl";
 
+// Computed from the real sender circuit; see the full table/formula
+// comment by its declaration in Config.h.
+const float DEFAULT_LEVEL_VOLTAGES[FLOAT_LEVEL_COUNT] = {
+  0.0000f, 0.0943f, 0.1833f, 0.2676f, 0.3474f, 0.4231f, 0.4950f,
+  0.5634f, 0.6286f, 0.6907f, 0.7500f, 0.8067f, 0.8609f
+};
+
 void FloatLevelSensor::loadDefaults() {
   for (int i = 0; i < FLOAT_LEVEL_COUNT; i++) {
-    _levelVolts[i] = i * DEFAULT_LEVEL_V_STEP;
+    _levelVolts[i] = DEFAULT_LEVEL_VOLTAGES[i];
   }
 }
 
